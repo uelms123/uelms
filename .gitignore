@@ -1,0 +1,3 @@
+node_modules/
+serviceaccount.json
+.env
