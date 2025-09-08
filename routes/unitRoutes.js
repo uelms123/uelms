@@ -177,7 +177,7 @@ router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
       fileData = new File({
         title: fileName,
         name: fileName,
-        type: 'text/link', // Custom MIME type for links
+        type: 'text/link',
         size: formatFileSize(Buffer.from(linkUrl).length),
         content: linkUrl,
         lastModified: new Date().toLocaleDateString(),
