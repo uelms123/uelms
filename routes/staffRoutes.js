@@ -86,7 +86,7 @@ router.delete('/users', async (req, res) => {
 // Bulk user creation (staff or student)
 router.post('/bulk-users', async (req, res) => {
   try {
-    const type = req.query.type; // 'staff' or 'student'
+    const type = req.query.type; 
     const users = req.body.users;
 
     if (!type || !['staff', 'student'].includes(type)) {

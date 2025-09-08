@@ -8,7 +8,8 @@ const Unit = require('../models/unit');
 const File = require('../models/files');
 
 // Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, '../Uploads');
+const uploadsDir = '/var/data/uploads';
+
 fsPromises.mkdir(uploadsDir, { recursive: true }).catch(console.error);
 
 // Multer configuration for file uploads
@@ -43,6 +44,12 @@ const upload = multer({
       'audio/ogg',
       // Documents
       'application/pdf',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'text/plain',
       'application/json',
       'text/html',
@@ -109,10 +116,13 @@ router.post('/', async (req, res) => {
 });
 
 // Add file to unit
+// ... (other imports and configurations remain the same)
+
+// Add file to unit
 router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
   try {
     const { unitId } = req.params;
-    const { fileName, notesContent, fileType } = req.body;
+    const { fileName, notesContent, fileType, linkUrl } = req.body;
 
     if (!fileName) {
       return res.status(400).json({ error: 'File name is required' });
@@ -131,17 +141,19 @@ router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
         req.file.originalname.match(/\.(txt|js|html|css|md)$/);
 
       const fileContent = isTextFile
-        ? await fsPromises.readFile(req.file.path, 'utf8')
-        : null; // Do not read binary files (e.g., videos, audio) into memory
+        ? await fsPromises.readFile(req.file.path, 'utf8').catch(() => null)
+        : null;
 
       fileData = new File({
         title: fileName,
         name: req.file.originalname,
         type: req.file.mimetype,
         size: formatFileSize(req.file.size),
-        content: fileContent, // Only store content for text-based files
+        content: fileContent,
         lastModified: new Date().toLocaleDateString(),
         isUploadedFile: true,
+        isNotes: false,
+        isLink: false,
         filePath: req.file.path,
       });
     } else if (fileType === 'notes' && notesContent) {
@@ -153,11 +165,29 @@ router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
         size: formatFileSize(blob.length),
         content: notesContent,
         lastModified: new Date().toLocaleDateString(),
+        isUploadedFile: false,
         isNotes: true,
-        filePath: '', // Notes don’t need a file path
+        isLink: false,
+        filePath: '',
+      });
+    } else if (fileType === 'link' && linkUrl) {
+      if (!linkUrl.match(/^https?:\/\/[^\s/$.?#].[^\s]*$/)) {
+        return res.status(400).json({ error: 'Invalid URL format' });
+      }
+      fileData = new File({
+        title: fileName,
+        name: fileName,
+        type: 'text/link', // Custom MIME type for links
+        size: formatFileSize(Buffer.from(linkUrl).length),
+        content: linkUrl,
+        lastModified: new Date().toLocaleDateString(),
+        isUploadedFile: false,
+        isNotes: false,
+        isLink: true,
+        filePath: '',
       });
     } else {
-      return res.status(400).json({ error: 'Invalid file or notes content' });
+      return res.status(400).json({ error: 'Invalid file, notes content, or link URL' });
     }
 
     const savedFile = await fileData.save();
@@ -171,6 +201,9 @@ router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
   }
 });
 
+
+
+// ... (other routes remain the same)
 // Serve file (for downloading or streaming)
 router.get('/files/:fileId', async (req, res) => {
   try {
@@ -215,7 +248,7 @@ router.get('/files/:fileId', async (req, res) => {
         fs.createReadStream(filePath).pipe(res);
       }
     } else {
-      // Handle downloads for other files (e.g., PDF, images)
+      // Handle downloads for other files (e.g., PDF, images, PPT, Excel, DOC)
       res.set({
         'Content-Type': file.type,
         'Content-Disposition': `inline; filename="${file.name}"`, // Use inline for previews
@@ -286,34 +319,26 @@ router.put('/:unitId', async (req, res) => {
 router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, res) => {
   try {
     const { unitId, fileId } = req.params;
-    const { fileName, notesContent, fileType } = req.body;
+    const { fileName, notesContent, fileType, linkUrl } = req.body;
 
-    // Log received data for debugging
-    console.log('Received data:', { unitId, fileId, fileName, notesContent, fileType, file: req.file });
-
-    // Validate required fields
     if (!fileName) {
       return res.status(400).json({ error: 'File name is required' });
     }
 
-    // Find the unit
     const unit = await Unit.findById(unitId);
     if (!unit) {
       return res.status(404).json({ error: 'Unit not found' });
     }
 
-    // Find the file
     const file = await File.findById(fileId);
     if (!file) {
       return res.status(404).json({ error: 'File not found' });
     }
 
-    // Update file title and last modified date
     file.title = fileName;
     file.lastModified = new Date().toLocaleDateString();
 
     if (fileType === 'upload' && req.file) {
-      // Delete old file if it exists and is different
       if (file.filePath && file.filePath !== req.file.path) {
         try {
           await fsPromises.unlink(file.filePath);
@@ -328,7 +353,7 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
         req.file.originalname.match(/\.(txt|js|html|css|md)$/);
 
       const fileContent = isTextFile
-        ? await fsPromises.readFile(req.file.path, 'utf8')
+        ? await fsPromises.readFile(req.file.path, 'utf8').catch(() => null)
         : null;
 
       file.name = req.file.originalname;
@@ -337,6 +362,7 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
       file.content = fileContent;
       file.isUploadedFile = true;
       file.isNotes = false;
+      file.isLink = false;
       file.filePath = req.file.path;
     } else if (fileType === 'notes' && notesContent) {
       if (file.filePath) {
@@ -354,7 +380,30 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
       file.content = notesContent;
       file.isUploadedFile = false;
       file.isNotes = true;
+      file.isLink = false;
       file.filePath = '';
+    } else if (fileType === 'link' && linkUrl) {
+      if (!linkUrl.match(/^https?:\/\/[^\s/$.?#].[^\s]*$/)) {
+        return res.status(400).json({ error: 'Invalid URL format' });
+      }
+      if (file.filePath) {
+        try {
+          await fsPromises.unlink(file.filePath);
+        } catch (err) {
+          console.error(`Failed to delete old file ${file.filePath}:`, err);
+        }
+      }
+
+      file.name = fileName;
+      file.type = 'text/link';
+      file.size = formatFileSize(Buffer.from(linkUrl).length);
+      file.content = linkUrl;
+      file.isUploadedFile = false;
+      file.isNotes = false;
+      file.isLink = true;
+      file.filePath = '';
+    } else {
+      return res.status(400).json({ error: 'Invalid file, notes content, or link URL' });
     }
 
     await file.save();
