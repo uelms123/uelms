@@ -10,7 +10,8 @@ const fileSchema = new mongoose.Schema({
   isUploadedFile: { type: Boolean, default: true }, 
   isNotes: { type: Boolean, default: false }, 
   filePath: { type: String, required: false }, 
-  content: { type: String }, 
+  isLink: { type: Boolean, default: false }, // New field for links
+ content: { type: String }, // Content for text files or notes or link URL
 });
 
 module.exports = mongoose.model('File', fileSchema);
