@@ -6,16 +6,13 @@ const announcementRoutes = require('./routes/announcementRoutes');
 const unitRoutes = require('./routes/unitRoutes');
 const assignmentRoutes = require('./routes/assignments');
 const submissionRoutes = require('./routes/submissions');
-const apiRoutes = require('./routes/staffRoutes');
+const staffRoutes = require('./routes/staffRoutes');
 const studentRoutes = require('./routes/studentRoutes');
 const admin = require('firebase-admin');
 const messageRoutes = require('./routes/messages');
 const studLogin = require('./routes/activityRoutes');
-const path = require('path');
-const fs = require('fs');
 require('dotenv').config();
 
-// Debug Firebase env variables
 console.log('FIREBASE_PRIVATE_KEY:', process.env.FIREBASE_PRIVATE_KEY ? 'Defined' : 'Undefined');
 
 const firebaseConfig = {
@@ -27,7 +24,7 @@ const firebaseConfig = {
 };
 
 if (!firebaseConfig.projectId || !firebaseConfig.clientEmail || !firebaseConfig.privateKey) {
-  console.error('❌ Missing Firebase configuration variables');
+  console.error('Missing Firebase configuration variables');
   process.exit(1);
 }
 
@@ -38,42 +35,41 @@ admin.initializeApp({
 const app = express();
 const port = process.env.PORT || 5000;
 
-// Middleware
 app.use(express.urlencoded({ extended: true }));
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
-// MongoDB connection
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
-    console.log('✅ Connected to MongoDB');
+    console.log('Connected to MongoDB');
   })
   .catch((err) => {
-    console.error('❌ MongoDB connection error:', err);
+    console.error('MongoDB connection error:', err);
   });
 
-// Ensure uploads directory exists (persistent disk on Render)
-const uploadPath = '/var/data/uploads';
-if (!fs.existsSync(uploadPath)) {
-  fs.mkdirSync(uploadPath, { recursive: true });
-  console.log(`📂 Created uploads directory at ${uploadPath}`);
-}
+const path = require('path');
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Serve uploaded files statically
-app.use('/uploads', express.static(uploadPath));
+// Log all requests for debugging
+app.use((req, res, next) => {
+  console.log(`${req.method} request to ${req.path}`);
+  next();
+});
 
-// Routes
 app.use('/api/classes', classRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/units', unitRoutes);
 app.use('/api/assignments', assignmentRoutes);
 app.use('/api/submissions', submissionRoutes);
-app.use('/api', apiRoutes);
+app.use('/api', staffRoutes);
 app.use('/api/students', studentRoutes);
-app.use('/api', messageRoutes);
+app.use('/api/messages', messageRoutes);
 app.use('/api/activity', studLogin);
 
-// Start server
 app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
+  console.log(`Server running on port ${port}`);
 });
