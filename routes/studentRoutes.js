@@ -6,7 +6,7 @@ const Student = require('../models/Students');
 router.get('/', async (req, res) => {
   try {
     const students = await Student.find({});
-    res.json(students);
+    res.status(200).json(students);
   } catch (err) {
     console.error('Error fetching students:', err);
     res.status(500).json({ 
@@ -46,6 +46,12 @@ router.post('/', async (req, res) => {
     });
   } catch (err) {
     console.error('Error adding student:', err);
+    if (err.code === 11000) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Student email already exists in database' 
+      });
+    }
     res.status(500).json({ 
       success: false,
       error: 'Failed to add student: ' + err.message 
@@ -74,7 +80,7 @@ router.delete('/:email', async (req, res) => {
       });
     }
 
-    res.json({ 
+    res.status(200).json({ 
       success: true,
       message: 'Student deleted successfully',
       deletedCount: result.deletedCount
