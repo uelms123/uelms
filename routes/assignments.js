@@ -3,7 +3,6 @@ const router = express.Router();
 const Assignment = require('../models/Assignment');
 const Submission = require('../models/Submission');
 const fs = require('fs');
-const path = require('path');
 
 // Get all assignments for a class and staff
 router.get('/:classId/staff/:staffId', async (req, res) => {
@@ -31,6 +30,8 @@ router.get('/:classId/staff/:staffId', async (req, res) => {
     });
   }
 });
+
+
 
 // Get all assignments for a class (for students)
 router.get('/:classId/student/:studentId', async (req, res) => {
@@ -225,20 +226,7 @@ router.get('/:id/submissions', async (req, res) => {
   try {
     const submissions = await Submission.find({ assignmentId: req.params.id })
       .sort({ submissionDate: -1 });
-    
-    // Ensure files have proper URLs
-    const submissionsWithFileUrls = submissions.map(submission => {
-      const submissionObj = submission.toObject();
-      if (submissionObj.files && submissionObj.files.length > 0) {
-        submissionObj.files = submissionObj.files.map(file => ({
-          ...file,
-          url: file.url || `/uploads/${file.filename}`
-        }));
-      }
-      return submissionObj;
-    });
-
-    res.json(submissionsWithFileUrls);
+    res.json(submissions);
   } catch (err) {
     res.status(500).json({
       message: 'Failed to fetch submissions',
@@ -246,5 +234,7 @@ router.get('/:id/submissions', async (req, res) => {
     });
   }
 });
+
+
 
 module.exports = router;
