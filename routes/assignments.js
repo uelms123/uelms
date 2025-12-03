@@ -13,25 +13,26 @@ router.get('/:classId/staff/:staffId', async (req, res) => {
     }).sort({ createdAt: -1 });
 
     // Calculate unique student count for each assignment
-    const assignmentsWithStudentCount = await Promise.all(assignments.map(async (assignment) => {
-      const submissions = await Submission.find({ assignmentId: assignment._id });
-      const uniqueStudentIds = [...new Set(submissions.map(sub => sub.studentId))];
-      return {
-        ...assignment.toObject(),
-        uniqueStudentCount: uniqueStudentIds.length
-      };
-    }));
+    const assignmentsWithStudentCount = await Promise.all(
+      assignments.map(async (assignment) => {
+        const submissions = await Submission.find({ assignmentId: assignment._id });
+        const uniqueStudentIds = [...new Set(submissions.map(sub => sub.studentId))];
+        return {
+          ...assignment.toObject(),
+          uniqueStudentCount: uniqueStudentIds.length
+        };
+      })
+    );
 
     res.json(assignmentsWithStudentCount);
   } catch (err) {
+    console.error('Error fetching staff assignments:', err);
     res.status(500).json({
       message: 'Failed to fetch assignments',
       error: err.message
     });
   }
 });
-
-
 
 // Get all assignments for a class (for students)
 router.get('/:classId/student/:studentId', async (req, res) => {
@@ -41,6 +42,7 @@ router.get('/:classId/student/:studentId', async (req, res) => {
     }).sort({ createdAt: -1 });
     res.json(assignments);
   } catch (err) {
+    console.error('Error fetching student assignments:', err);
     res.status(500).json({
       message: 'Failed to fetch assignments',
       error: err.message
@@ -55,37 +57,25 @@ router.post('/staff/:staffId', async (req, res) => {
 
     // Validate meetLink based on type
     let validatedMeetLink = meetLink;
-    if (type.includes('meet')) {
+    if (type?.includes('meet')) {
       if (!meetLink) {
         if (type === 'meet-google') {
           validatedMeetLink = 'https://meet.google.com/new';
         } else if (type === 'meet-zoom') {
-          return res.status(400).json({
-            message: 'Zoom meeting link is required.',
-          });
+          return res.status(400).json({ message: 'Zoom meeting link is required.' });
         } else if (type === 'meet-teams') {
-          return res.status(400).json({
-            message: 'Microsoft Teams meeting link is required.',
-          });
+          return res.status(400).json({ message: 'Microsoft Teams meeting link is required.' });
         }
       } else {
-        // Basic URL validation
         const urlRegex = /^(https?:\/\/[^\s$.?#].[^\s]*)$/;
         if (!urlRegex.test(meetLink)) {
-          return res.status(400).json({
-            message: 'Invalid meeting link provided.',
-          });
+          return res.status(400).json({ message: 'Invalid meeting link provided.' });
         }
-        // Optional: Add specific validation for Zoom and Teams URLs
         if (type === 'meet-zoom' && !meetLink.includes('zoom.us')) {
-          return res.status(400).json({
-            message: 'Invalid Zoom meeting link.',
-          });
+          return res.status(400).json({ message: 'Invalid Zoom meeting link.' });
         }
         if (type === 'meet-teams' && !meetLink.includes('teams.microsoft.com')) {
-          return res.status(400).json({
-            message: 'Invalid Microsoft Teams meeting link.',
-          });
+          return res.status(400).json({ message: 'Invalid Microsoft Teams meeting link.' });
         }
       }
     }
@@ -106,6 +96,7 @@ router.post('/staff/:staffId', async (req, res) => {
     const newAssignment = await assignment.save();
     res.status(201).json(newAssignment);
   } catch (err) {
+    console.error('Error creating assignment:', err);
     res.status(400).json({
       message: 'Failed to create assignment',
       error: err.message,
@@ -126,39 +117,26 @@ router.put('/:id/staff/:staffId', async (req, res) => {
 
     const { meetLink, type, title, description, assignmentType, question, formLink, meetTime } = req.body;
 
-    // Validate meetLink based on type
     let validatedMeetLink = meetLink || assignment.meetLink;
-    if (type.includes('meet')) {
+    if ((type || assignment.type).includes('meet')) {
       if (!validatedMeetLink) {
         if (type === 'meet-google') {
           validatedMeetLink = 'https://meet.google.com/new';
         } else if (type === 'meet-zoom') {
-          return res.status(400).json({
-            message: 'Zoom meeting link is required.',
-          });
+          return res.status(400).json({ message: 'Zoom meeting link is required.' });
         } else if (type === 'meet-teams') {
-          return res.status(400).json({
-            message: 'Microsoft Teams meeting link is required.',
-          });
+          return res.status(400).json({ message: 'Microsoft Teams meeting link is required.' });
         }
       } else {
-        // Basic URL validation
         const urlRegex = /^(https?:\/\/[^\s$.?#].[^\s]*)$/;
         if (!urlRegex.test(validatedMeetLink)) {
-          return res.status(400).json({
-            message: 'Invalid meeting link provided.',
-          });
+          return res.status(400).json({ message: 'Invalid meeting link provided.' });
         }
-        // Optional: Add specific validation for Zoom and Teams URLs
-        if (type === 'meet-zoom' && !validatedMeetLink.includes('zoom.us')) {
-          return res.status(400).json({
-            message: 'Invalid Zoom meeting link.',
-          });
+        if ((type || assignment.type) === 'meet-zoom' && !validatedMeetLink.includes('zoom.us')) {
+          return res.status(400).json({ message: 'Invalid Zoom meeting link.' });
         }
-        if (type === 'meet-teams' && !validatedMeetLink.includes('teams.microsoft.com')) {
-          return res.status(400).json({
-            message: 'Invalid Microsoft Teams meeting link.',
-          });
+        if ((type || assignment.type) === 'meet-teams' && !validatedMeetLink.includes('teams.microsoft.com')) {
+          return res.status(400).json({ message: 'Invalid Microsoft Teams meeting link.' });
         }
       }
     }
@@ -171,10 +149,12 @@ router.put('/:id/staff/:staffId', async (req, res) => {
     assignment.formLink = formLink || assignment.formLink;
     assignment.meetTime = meetTime || assignment.meetTime;
     assignment.meetLink = validatedMeetLink;
+    assignment.updatedAt = Date.now();
 
     const updatedAssignment = await assignment.save();
     res.json(updatedAssignment);
   } catch (err) {
+    console.error('Error updating assignment:', err);
     res.status(400).json({
       message: 'Failed to update assignment',
       error: err.message,
@@ -193,7 +173,6 @@ router.delete('/:id/staff/:staffId', async (req, res) => {
       return res.status(404).json({ message: 'Assignment not found or you are not authorized' });
     }
 
-    // Delete associated submissions and their files
     const submissions = await Submission.find({ assignmentId: req.params.id });
     for (const submission of submissions) {
       for (const file of submission.files) {
@@ -206,6 +185,7 @@ router.delete('/:id/staff/:staffId', async (req, res) => {
         }
       }
     }
+
     await Submission.deleteMany({ assignmentId: req.params.id });
     await Assignment.deleteOne({ _id: req.params.id });
 
@@ -214,6 +194,7 @@ router.delete('/:id/staff/:staffId', async (req, res) => {
       message: 'Assignment and associated submissions deleted successfully'
     });
   } catch (err) {
+    console.error('Error deleting assignment:', err);
     res.status(500).json({
       message: 'Failed to delete assignment',
       error: err.message
@@ -228,13 +209,12 @@ router.get('/:id/submissions', async (req, res) => {
       .sort({ submissionDate: -1 });
     res.json(submissions);
   } catch (err) {
+    console.error('Error fetching submissions:', err);
     res.status(500).json({
       message: 'Failed to fetch submissions',
       error: err.message
     });
   }
 });
-
-
 
 module.exports = router;

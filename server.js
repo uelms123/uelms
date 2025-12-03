@@ -52,7 +52,16 @@ mongoose.connect(process.env.MONGODB_URI)
   });
 
 const path = require('path');
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+const fs = require('fs');
+
+// Create 'uploads' directory if it doesn't exist
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Serve static files from the 'uploads' directory
+app.use('/uploads', express.static(uploadsDir));
 
 // Log all requests for debugging
 app.use((req, res, next) => {
@@ -69,6 +78,21 @@ app.use('/api', staffRoutes);
 app.use('/api/students', studentRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/activity', studLogin);
+
+// 404 handler (fixed without '*')
+app.use((req, res, next) => {
+  res.status(404).json({
+    message: 'Not Found'
+  });
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({
+    message: 'Internal Server Error'
+  });
+});
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);

@@ -8,20 +8,19 @@ const Unit = require('../models/unit');
 const File = require('../models/files');
 
 // Ensure uploads directory exists
-const uploadsDir = '/var/data/uploads';
+const uploadsDir = path.join(__dirname, '../Uploads');
 fsPromises.mkdir(uploadsDir, { recursive: true }).catch(console.error);
 
 // Multer configuration for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, uploadsDir);  // Use the persistent disk path
+    cb(null, 'Uploads/');
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
     cb(null, uniqueSuffix + '-' + file.originalname);
   },
 });
-
 
 const upload = multer({
   storage: storage,
@@ -177,7 +176,7 @@ router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
       fileData = new File({
         title: fileName,
         name: fileName,
-        type: 'text/link',
+        type: 'text/link', // Custom MIME type for links
         size: formatFileSize(Buffer.from(linkUrl).length),
         content: linkUrl,
         lastModified: new Date().toLocaleDateString(),
