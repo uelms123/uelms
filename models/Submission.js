@@ -8,6 +8,31 @@ const fileSchema = new mongoose.Schema({
   url: String
 });
 
+const gradingSchema = new mongoose.Schema({
+  marks: {
+    type: Number,
+    min: 0,
+    max: 100,
+    default: null
+  },
+  comments: {
+    type: String,
+    default: ''
+  },
+  gradedBy: {
+    type: String, // Staff ID or name
+    default: ''
+  },
+  gradedAt: {
+    type: Date,
+    default: null
+  },
+  maxMarks: {
+    type: Number,
+    default: 100
+  }
+});
+
 const submissionSchema = new mongoose.Schema({
   assignmentId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -33,7 +58,11 @@ const submissionSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
-  studentName: String
+  studentName: String,
+  grading: {
+    type: gradingSchema,
+    default: () => ({})
+  }
 });
 
 module.exports = mongoose.model('Submission', submissionSchema);

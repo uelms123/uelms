@@ -16,7 +16,8 @@
     "firebase": "^12.6.0",
     "firebase-admin": "^13.4.0",
     "mongoose": "^8.20.1",
-    "multer": "^2.0.1"
+    "multer": "^2.0.1",
+    "node-cron": "^4.2.1"
   },
   "description": "",
   "devDependencies": {

@@ -24,7 +24,7 @@ router.get('/status/:classId/student/:studentId', async (req, res) => {
       classId: req.params.classId,
       studentId: req.params.studentId
     })
-      .select('assignmentId submitted submissionDate answer files studentName')
+      .select('assignmentId submitted submissionDate answer files studentName grading')
       .populate('files', 'name url type size _id');
 
     const status = {};
@@ -40,7 +40,8 @@ router.get('/status/:classId/student/:studentId', async (req, res) => {
           submissionDate: sub.submissionDate,
           answer: sub.answer,
           files: sub.files,
-          studentName: sub.studentName
+          studentName: sub.studentName,
+          grading: sub.grading || {}
         });
       }
     });
@@ -92,7 +93,14 @@ router.post('/', upload.array('files'), async (req, res) => {
       files,
       submitted: true,
       submissionDate: new Date(),
-      studentName
+      studentName,
+      grading: {
+        marks: null,
+        comments: '',
+        gradedBy: '',
+        gradedAt: null,
+        maxMarks: 100
+      }
     });
 
     await submission.save();
@@ -162,6 +170,68 @@ router.delete('/:submissionId/file/:fileId', async (req, res) => {
     res.json({ message: 'File deleted successfully' });
   } catch (err) {
     res.status(500).json({ message: err.message });
+  }
+});
+
+// Grade a submission (add marks and comments)
+router.put('/:id/grade', async (req, res) => {
+  try {
+    const { marks, comments, gradedBy, maxMarks } = req.body;
+    
+    if (marks !== undefined && (marks < 0 || marks > (maxMarks || 100))) {
+      return res.status(400).json({ 
+        message: `Marks must be between 0 and ${maxMarks || 100}` 
+      });
+    }
+
+    const submission = await Submission.findById(req.params.id);
+    if (!submission) {
+      return res.status(404).json({ message: 'Submission not found' });
+    }
+
+    submission.grading = {
+      marks: marks !== undefined ? Number(marks) : submission.grading.marks,
+      comments: comments || submission.grading.comments,
+      gradedBy: gradedBy || submission.grading.gradedBy,
+      gradedAt: new Date(),
+      maxMarks: maxMarks || submission.grading.maxMarks || 100
+    };
+
+    await submission.save();
+    
+    res.json({
+      success: true,
+      message: 'Submission graded successfully',
+      submission
+    });
+  } catch (err) {
+    console.error('Error grading submission:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to grade submission',
+      error: err.message 
+    });
+  }
+});
+
+// Get graded submissions for a student
+router.get('/graded/:studentId', async (req, res) => {
+  try {
+    const submissions = await Submission.find({
+      studentId: req.params.studentId,
+      'grading.marks': { $ne: null }
+    })
+    .populate('assignmentId', 'title')
+    .populate('classId', 'name section')
+    .sort({ 'grading.gradedAt': -1 });
+
+    res.json(submissions);
+  } catch (err) {
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to fetch graded submissions',
+      error: err.message 
+    });
   }
 });
 

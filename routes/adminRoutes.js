@@ -4,10 +4,10 @@ const admin = require('firebase-admin');
 const Staff = require('../models/Staff');
 const Student = require('../models/Students');
 
-// Add staff
+// Add staff with password
 router.post('/staff', async (req, res) => {
   try {
-    const { name, program, email } = req.body;
+    const { name, program, email, tempPassword } = req.body;
     
     if (!name) {
       return res.status(400).json({ 
@@ -26,7 +26,9 @@ router.post('/staff', async (req, res) => {
     const staff = new Staff({ 
       name: name,
       program: program || null, // Program is optional for staff
-      email: email.toLowerCase() 
+      email: email.toLowerCase(),
+      tempPassword: tempPassword || null, // Store temporary password for PDF
+      createdAt: new Date()
     });
     await staff.save();
     
@@ -49,15 +51,29 @@ router.post('/staff', async (req, res) => {
   }
 });
 
-// Get staff
+// Get staff (without passwords for security)
 router.get('/staff', async (req, res) => {
   try {
-    const staff = await Staff.find();
+    const staff = await Staff.find({}, '-tempPassword -__v');
     res.status(200).json(staff);
   } catch (err) {
     res.status(500).json({ 
       success: false,
       error: 'Failed to fetch staff: ' + err.message 
+    });
+  }
+});
+
+// Get staff with passwords (for admin PDF generation)
+router.get('/staff-with-passwords', async (req, res) => {
+  try {
+    // Verify admin authentication if needed
+    const staff = await Staff.find({}, '-_id -__v');
+    res.status(200).json(staff);
+  } catch (err) {
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch staff with passwords: ' + err.message 
     });
   }
 });
@@ -153,7 +169,7 @@ router.delete('/users', async (req, res) => {
 // Update user (staff or student)
 router.put('/users', async (req, res) => {
   try {
-    const { oldEmail, newEmail, type, newPassword, name, program } = req.body;
+    const { oldEmail, newEmail, type, newPassword, name, program, tempPassword } = req.body;
     console.log('Update request received:', { oldEmail, newEmail, type, name, program });
 
     if (!oldEmail || !newEmail || !type) {
@@ -227,6 +243,7 @@ router.put('/users', async (req, res) => {
       const updateFields = {};
       if (name) updateFields.name = name;
       if (program !== undefined) updateFields.program = program;
+      if (tempPassword !== undefined) updateFields.tempPassword = tempPassword;
       if (oldEmail.toLowerCase() !== newEmail.toLowerCase()) {
         updateFields.email = newEmail.toLowerCase();
       }
@@ -241,6 +258,7 @@ router.put('/users', async (req, res) => {
       const updateFields = {};
       if (name) updateFields.name = name;
       if (program) updateFields.program = program;
+      if (tempPassword !== undefined) updateFields.tempPassword = tempPassword;
       if (oldEmail.toLowerCase() !== newEmail.toLowerCase()) {
         updateFields.email = newEmail.toLowerCase();
       }
@@ -272,7 +290,7 @@ router.put('/users', async (req, res) => {
   }
 });
 
-// Bulk user creation (staff or student)
+// Bulk user creation (staff or student) with passwords
 router.post('/bulk-users', async (req, res) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   
@@ -343,12 +361,14 @@ router.post('/bulk-users', async (req, res) => {
           displayName: name
         });
 
-        // Add to MongoDB
+        // Add to MongoDB with password
         if (type === 'staff') {
           const staffData = {
             name: name,
             program: program || null,
-            email: lowerEmail
+            email: lowerEmail,
+            tempPassword: password, // Store password for PDF
+            createdAt: new Date()
           };
           await Staff.updateOne(
             { email: lowerEmail }, 
@@ -359,7 +379,9 @@ router.post('/bulk-users', async (req, res) => {
           const studentData = {
             name: name,
             program: program,
-            email: lowerEmail
+            email: lowerEmail,
+            tempPassword: password, // Store password for PDF
+            createdAt: new Date()
           };
           await Student.updateOne(
             { email: lowerEmail }, 
@@ -382,6 +404,40 @@ router.post('/bulk-users', async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: 'Failed to bulk create users: ' + err.message 
+    });
+  }
+});
+
+// Clear temporary passwords (security cleanup)
+router.post('/clear-temp-passwords', async (req, res) => {
+  try {
+    // Clear passwords older than 24 hours
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    
+    await Staff.updateMany(
+      { 
+        tempPassword: { $exists: true },
+        createdAt: { $lt: twentyFourHoursAgo }
+      },
+      { $unset: { tempPassword: "" } }
+    );
+    
+    await Student.updateMany(
+      { 
+        tempPassword: { $exists: true },
+        createdAt: { $lt: twentyFourHoursAgo }
+      },
+      { $unset: { tempPassword: "" } }
+    );
+    
+    res.status(200).json({ 
+      success: true,
+      message: 'Temporary passwords cleared successfully'
+    });
+  } catch (err) {
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to clear temporary passwords: ' + err.message 
     });
   }
 });
