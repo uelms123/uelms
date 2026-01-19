@@ -55,7 +55,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '100mb' }));
 
 app.use(cors({
-  origin: 'https://uelms.com ',
+  origin: 'https://uelms.com',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   credentials: true
