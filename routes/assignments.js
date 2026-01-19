@@ -4,11 +4,10 @@ const Assignment = require('../models/Assignment');
 const Submission = require('../models/Submission');
 const fs = require('fs');
 
-router.get('/:classId/staff/:staffId', async (req, res) => {
+router.get('/:classId', async (req, res) => {
   try {
     const assignments = await Assignment.find({
-      classId: req.params.classId,
-      staffId: req.params.staffId
+      classId: req.params.classId
     }).sort({ createdAt: -1 });
 
     const assignmentsWithStudentCount = await Promise.all(
@@ -24,7 +23,7 @@ router.get('/:classId/staff/:staffId', async (req, res) => {
 
     res.json(assignmentsWithStudentCount);
   } catch (err) {
-    console.error('Error fetching staff assignments:', err);
+    console.error('Error fetching assignments:', err);
     res.status(500).json({
       message: 'Failed to fetch assignments',
       error: err.message
@@ -37,6 +36,7 @@ router.get('/:classId/student/:studentId', async (req, res) => {
     const assignments = await Assignment.find({
       classId: req.params.classId
     }).sort({ createdAt: -1 });
+    
     res.json(assignments);
   } catch (err) {
     console.error('Error fetching student assignments:', err);
@@ -47,9 +47,9 @@ router.get('/:classId/student/:studentId', async (req, res) => {
   }
 });
 
-router.post('/staff/:staffId', async (req, res) => {
+router.post('/', async (req, res) => {
   try {
-    const { meetLink, type } = req.body;
+    const { meetLink, type, staffId } = req.body;
 
     let validatedMeetLink = meetLink;
     if (type?.includes('meet')) {
@@ -77,7 +77,7 @@ router.post('/staff/:staffId', async (req, res) => {
 
     const assignment = new Assignment({
       classId: req.body.classId,
-      staffId: req.params.staffId,
+      staffId: staffId,
       type: 'assignment',
       title: req.body.title,
       description: req.body.description,
@@ -99,14 +99,13 @@ router.post('/staff/:staffId', async (req, res) => {
   }
 });
 
-router.put('/:id/staff/:staffId', async (req, res) => {
+router.put('/:id', async (req, res) => {
   try {
     const assignment = await Assignment.findOne({
-      _id: req.params.id,
-      staffId: req.params.staffId,
+      _id: req.params.id
     });
     if (!assignment) {
-      return res.status(404).json({ message: 'Assignment not found or you are not authorized' });
+      return res.status(404).json({ message: 'Assignment not found' });
     }
 
     const { meetLink, type, title, description, assignmentType, question, mcqQuestions, meetTime } = req.body;
@@ -155,14 +154,13 @@ router.put('/:id/staff/:staffId', async (req, res) => {
   }
 });
 
-router.delete('/:id/staff/:staffId', async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
     const assignment = await Assignment.findOne({
-      _id: req.params.id,
-      staffId: req.params.staffId
+      _id: req.params.id
     });
     if (!assignment) {
-      return res.status(404).json({ message: 'Assignment not found or you are not authorized' });
+      return res.status(404).json({ message: 'Assignment not found' });
     }
 
     const submissions = await Submission.find({ assignmentId: req.params.id });
