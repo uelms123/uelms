@@ -56,7 +56,6 @@ app.use(express.json({ limit: '100mb' }));
 
 const allowedOrigins = [
   'https://uelms.com',
-  'https://www.uelms.com',
   'https://uelms.onrender.com'
 ];
 
