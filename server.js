@@ -55,9 +55,18 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '100mb' }));
 
 app.use(cors({
-  origin: 'https://uelms.com',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  origin: (origin, callback) => {
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'https://uelms.onrender.com',
+      'https://uelms.com',
+    ];
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true
 }));
 
