@@ -1,5 +1,15 @@
 const mongoose = require('mongoose');
 
+const optionSchema = new mongoose.Schema({
+  text: { type: String, required: true },
+  isCorrect: { type: Boolean, default: false }
+});
+
+const mcqQuestionSchema = new mongoose.Schema({
+  question: { type: String, required: true },
+  options: [optionSchema]
+});
+
 const assignmentSchema = new mongoose.Schema({
   classId: {
     type: String,
@@ -24,17 +34,14 @@ const assignmentSchema = new mongoose.Schema({
   },
   assignmentType: {
     type: String,
-    enum: ['question', 'form', null],
+    enum: ['question', 'mcq', null],
     default: null
   },
   question: {
     type: String,
     default: null
   },
-  formLink: {
-    type: String,
-    default: null
-  },
+  mcqQuestions: [mcqQuestionSchema],
   meetTime: {
     type: String,
     default: null

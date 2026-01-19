@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const staffSchema = new mongoose.Schema({
   staffId: {
     type: String,
-    required: [true, 'Staff ID is required'],
+    required: [false, 'Staff ID is required'],
     unique: true
   },
   name: {
@@ -21,11 +21,11 @@ const staffSchema = new mongoose.Schema({
   },
   password: {
     type: String,
-    required: false // Store for export, but not for authentication
+    required: false
   },
   tempPassword: {
     type: String,
-    required: false // Temporary password for PDF generation
+    required: false
   },
   position: {
     type: String,
@@ -34,7 +34,7 @@ const staffSchema = new mongoose.Schema({
   },
   department: {
     type: String,
-    default: '',
+    required: [true, 'Department/Program is required'], // CHANGED: Made required
     trim: true
   },
   phone: {
@@ -50,6 +50,14 @@ const staffSchema = new mongoose.Schema({
     type: String,
     default: () => new Date().toISOString()
   },
+  // ADD THIS FIELD for tracking staff classes
+  createdClasses: {
+    type: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Class'
+    }],
+    default: []
+  },
   createdAt: {
     type: Date,
     default: Date.now
@@ -63,6 +71,12 @@ const staffSchema = new mongoose.Schema({
 // Update the updatedAt field on save
 staffSchema.pre('save', function(next) {
   this.updatedAt = Date.now();
+    if (!this.staffId) {
+    // Create staffId from email (remove @ and domain)
+    const emailPrefix = this.email.split('@')[0];
+    this.staffId = `staff_${emailPrefix}_${Date.now().toString().slice(-6)}`;
+  }
+    this.updatedAt = Date.now();
   if (!this.createdTimestamp) {
     this.createdTimestamp = new Date().toISOString();
   }

@@ -10,8 +10,19 @@ const fileSchema = new mongoose.Schema({
   isUploadedFile: { type: Boolean, default: true }, 
   isNotes: { type: Boolean, default: false }, 
   filePath: { type: String, required: false }, 
-  isLink: { type: Boolean, default: false }, // New field for links
- content: { type: String }, // Content for text files or notes or link URL
+  isLink: { type: Boolean, default: false },
+  content: { type: String },
+  
+  url: { type: String },  
+  uploadedBy: { type: String },
+  uploadedByEmail: { type: String },
+  uploadedByName: { type: String },
+  uploadedAt: { type: Date, default: Date.now },
+  
+  isAssessmentMaterial: { type: Boolean, default: false },
+  assessmentType: { type: String },
+  classId: { type: String },
+  unitId: { type: mongoose.Schema.Types.ObjectId, ref: 'Unit' }
 });
 
 module.exports = mongoose.model('File', fileSchema);

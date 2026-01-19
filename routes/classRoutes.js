@@ -1,3 +1,4 @@
+
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
@@ -5,7 +6,49 @@ const Class = require('../models/Class');
 const Staff = require('../models/Staff');
 const Student = require('../models/Students');
 
+// Helper function to extract name from email
+function extractNameFromEmail(email) {
+  if (!email) return 'Unknown User';
+  const username = email.split('@')[0];
+  const cleanName = username.replace(/[0-9._-]+/g, ' ');
+  return cleanName.split(' ')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+    .trim() || 'Unknown User';
+}
 
+// Helper function to check staff access
+// classRoutes.js - Update the checkStaffAccess helper function (around line 20)
+const checkStaffAccess = (classData, staffId, userEmail) => {
+  if (!classData) return false;
+  
+  // Normalize email to lowercase
+  const normalizedEmail = userEmail ? userEmail.toLowerCase() : null;
+  
+  // Check if staff has access to the class
+  const hasAccess = 
+    classData.staffId === staffId || // Is the creator
+    (classData.staff && Array.isArray(classData.staff) && classData.staff.some(s => 
+      s.staffId === staffId || // In staff array by staffId
+      (normalizedEmail && s.email && s.email.toLowerCase() === normalizedEmail) // In staff array by email
+    ));
+  
+  console.log('Access check:', {
+    classId: classData._id,
+    className: classData.name,
+    staffId,
+    userEmail: normalizedEmail,
+    classStaffId: classData.staffId,
+    staffArray: classData.staff ? classData.staff.map(s => ({ 
+      email: s.email, 
+      staffId: s.staffId,
+      name: s.name 
+    })) : [],
+    hasAccess
+  });
+  
+  return hasAccess;
+};
 
 // Create a new class
 router.post('/', async (req, res) => {
@@ -40,6 +83,16 @@ router.post('/', async (req, res) => {
 
     await newClass.save();
     
+    try {
+      const staff = await Staff.findOne({ staffId: staffId });
+      if (staff) {
+        staff.createdClasses.push(newClass._id);
+        await staff.save();
+      }
+    } catch (err) {
+      console.log('Note: Could not update staff classes array:', err.message);
+    }
+    
     res.status(201).json({
       success: true,
       class: newClass
@@ -53,17 +106,27 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Get all classes or classes for a specific staff member
+// Get all classes (with optional staffId filter)
 router.get('/', async (req, res) => {
   try {
     const { staffId } = req.query;
+    const { email } = req.query; // Add email parameter for shared classes
     
     let query = {};
     if (staffId) {
-      query.$or = [
-        { staffId },
-        { 'staff.staffId': staffId }
-      ];
+      // If email is provided, check both staffId and email
+      if (email) {
+        query.$or = [
+          { staffId },
+          { 'staff.staffId': staffId },
+          { 'staff.email': email.toLowerCase() }
+        ];
+      } else {
+        query.$or = [
+          { staffId },
+          { 'staff.staffId': staffId }
+        ];
+      }
     }
 
     const classes = await Class.find(query).sort({ createdAt: -1 });
@@ -80,9 +143,51 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Get all classes for a staff member (including shared ones)
+router.get('/staff/:staffId/all', async (req, res) => {
+  try {
+    const { staffId } = req.params;
+    const { email } = req.query;
+    
+    if (!staffId) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Staff ID is required' 
+      });
+    }
 
+    // Query for all classes where staff has access
+    const classes = await Class.find({
+      $or: [
+        { staffId: staffId },
+        { 'staff.staffId': staffId },
+        { 'staff.email': email ? email.toLowerCase() : null }
+      ].filter(condition => {
+        // Remove null conditions
+        if (condition && typeof condition === 'object') {
+          const key = Object.keys(condition)[0];
+          const value = condition[key];
+          return value !== null && value !== undefined;
+        }
+        return true;
+      })
+    }).sort({ createdAt: -1 });
 
-// Join a class
+    res.json({ 
+      success: true,
+      classes,
+      count: classes.length
+    });
+  } catch (error) {
+    console.error('Error fetching all classes for staff:', error.message, error.stack);
+    res.status(500).json({ 
+      success: false,
+      error: `Failed to fetch classes: ${error.message}`
+    });
+  }
+});
+
+// Join a class (for students)
 router.post('/join', async (req, res) => {
   try {
     const { classCode, studentId, name, email, rollNumber, batch, major } = req.body;
@@ -111,6 +216,7 @@ router.post('/join', async (req, res) => {
         error: 'Student already joined this class' 
       });
     }
+    
     classToJoin.students.push({
       studentId,
       name: name || email.split('@')[0] || 'Unknown',
@@ -173,6 +279,7 @@ router.get('/:id/verify', async (req, res) => {
 router.get('/:classId/staff/:staffId', async (req, res) => {
   try {
     const { classId, staffId } = req.params;
+    const { email } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(classId)) {
       return res.status(400).json({ 
@@ -189,12 +296,19 @@ router.get('/:classId/staff/:staffId', async (req, res) => {
       });
     }
 
-    // Verify if the staffId is part of the class
-    const isAuthorized = classData.staffId === staffId || classData.staff.some(s => s.staffId === staffId);
+    // Use helper function
+    const isAuthorized = checkStaffAccess(classData, staffId, email);
+    
     if (!isAuthorized) {
       return res.status(403).json({ 
         success: false,
-        error: 'Unauthorized: Staff member does not have access to this class' 
+        error: 'Unauthorized: Staff member does not have access to this class',
+        debug: {
+          staffId,
+          userEmail: email,
+          classStaffId: classData.staffId,
+          staffInClass: classData.staff ? classData.staff.map(s => ({ email: s.email, staffId: s.staffId })) : []
+        }
       });
     }
 
@@ -211,23 +325,11 @@ router.get('/:classId/staff/:staffId', async (req, res) => {
   }
 });
 
-// // Add this helper function at the top of the file
-function extractNameFromEmail(email) {
-  if (!email) return 'Unknown User';
-  const username = email.split('@')[0];
-  // Remove numbers and special characters, then split by dots/underscores
-  const cleanName = username.replace(/[0-9._-]+/g, ' ');
-  // Capitalize first letter of each word
-  return cleanName.split(' ')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ')
-    .trim() || 'Unknown User';
-}
-
-// Update the people route to use email-derived names when database names aren't available
+// Get people in a class (for staff)
 router.get('/:classId/people/staff/:staffId', async (req, res) => {
   try {
     const { classId, staffId } = req.params;
+    const { email } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(classId)) {
       return res.status(400).json({ 
@@ -244,8 +346,9 @@ router.get('/:classId/people/staff/:staffId', async (req, res) => {
       });
     }
 
-    // Verify if the staffId is part of the class
-    const isAuthorized = classData.staffId === staffId || classData.staff.some(s => s.staffId === staffId);
+    // Use helper function
+    const isAuthorized = checkStaffAccess(classData, staffId, email);
+    
     if (!isAuthorized) {
       return res.status(403).json({ 
         success: false,
@@ -253,7 +356,7 @@ router.get('/:classId/people/staff/:staffId', async (req, res) => {
       });
     }
 
-    // Combine staff and students into a single people array with names derived from email if needed
+    // Combine staff and students into a single people array
     const people = [
       ...(classData.staff || []).map(s => ({
         id: s.staffId,
@@ -295,7 +398,8 @@ router.get('/:classId/people/staff/:staffId', async (req, res) => {
 router.post('/:classId/invite/staff/:staffId', async (req, res) => {
   try {
     const { classId, staffId } = req.params;
-    const { email, role, message, name, position, department, phone, rollNumber, batch, major } = req.body;
+    const { email: inviteeEmail, role, name, inviteStaffId } = req.body;
+    const { email: inviterEmail } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(classId)) {
       return res.status(400).json({ 
@@ -304,7 +408,7 @@ router.post('/:classId/invite/staff/:staffId', async (req, res) => {
       });
     }
 
-    if (!email || !role) {
+    if (!inviteeEmail || !role) {
       return res.status(400).json({ 
         success: false,
         error: 'Email and role are required' 
@@ -319,8 +423,9 @@ router.post('/:classId/invite/staff/:staffId', async (req, res) => {
       });
     }
 
-    // Verify if the staffId is part of the class
-    const isAuthorized = classData.staffId === staffId || classData.staff.some(s => s.staffId === staffId);
+    // Use helper function with inviter's email
+    const isAuthorized = checkStaffAccess(classData, staffId, inviterEmail);
+    
     if (!isAuthorized) {
       return res.status(403).json({ 
         success: false,
@@ -329,8 +434,10 @@ router.post('/:classId/invite/staff/:staffId', async (req, res) => {
     }
 
     // Check if person already exists
-    const alreadyExists = classData.staff.some(s => s.email === email) || 
-                         classData.students.some(s => s.email === email);
+    const alreadyExists = 
+      (classData.staff && classData.staff.some(s => s.email === inviteeEmail.toLowerCase())) || 
+      (classData.students && classData.students.some(s => s.email === inviteeEmail.toLowerCase()));
+    
     if (alreadyExists) {
       return res.status(400).json({ 
         success: false,
@@ -338,51 +445,98 @@ router.post('/:classId/invite/staff/:staffId', async (req, res) => {
       });
     }
 
-    // Generate a unique ID (temporary; replace with Firebase UID in production)
-    const personId = `${role}_${Date.now()}`; // Replace with actual Firebase UID if available
-
-    const person = {
-      id: personId,
-      name: name || email.split('@')[0],
-      email,
-      role,
-      pinned: false
-    };
+    let personId;
+    let personName = name || inviteeEmail.split('@')[0] || 'Unknown';
 
     if (role === 'staff') {
+      // Look up staff in Staff collection
+      const staffMember = await Staff.findOne({ 
+        $or: [
+          { email: inviteeEmail.toLowerCase() },
+          { staffId: inviteStaffId }
+        ]
+      });
+      
+      if (!staffMember) {
+        return res.status(404).json({ 
+          success: false,
+          error: 'Staff member not found in the system' 
+        });
+      }
+      
+      personId = staffMember.staffId;
+      personName = staffMember.name || personName;
+      
+      console.log('Adding staff to class:', {
+        personId,
+        personName,
+        email: inviteeEmail.toLowerCase()
+      });
+      
+      // Check if already in staff array
+      const alreadyInStaff = classData.staff && classData.staff.some(s => 
+        s.staffId === personId || s.email === inviteeEmail.toLowerCase()
+      );
+      
+      if (alreadyInStaff) {
+        return res.status(400).json({ 
+          success: false,
+          error: 'Staff member already in this class' 
+        });
+      }
+      
+      // Add staff to the class
+      if (!classData.staff) classData.staff = [];
+      
       classData.staff.push({
         staffId: personId,
-        name: name || email.split('@')[0],
-        email,
-        position: position || '',
-        department: department || '',
-        phone: phone || '',
+        name: personName,
+        email: inviteeEmail.toLowerCase(),
+        position: req.body.position || staffMember.department || 'Teacher',
+        department: staffMember.department || '',
+        phone: '',
         joinedAt: new Date()
       });
-      person.position = position || '';
-      person.department = department || '';
-      person.phone = phone || '';
     } else {
+      // For students, find them in Student collection
+      const student = await Student.findOne({ email: inviteeEmail.toLowerCase() });
+      if (!student) {
+        return res.status(404).json({ 
+          success: false,
+          error: 'Student not found in the system' 
+        });
+      }
+      
+      personId = student._id.toString();
+      personName = student.name || personName;
+      
+      if (!classData.students) classData.students = [];
+      
       classData.students.push({
         studentId: personId,
-        name: name || email.split('@')[0],
-        email,
-        rollNumber: rollNumber || '',
-        batch: batch || '',
-        major: major || '',
+        name: personName,
+        email: inviteeEmail.toLowerCase(),
+        rollNumber: student.rollNumber || '',
+        batch: student.batch || '',
+        major: student.major || '',
         joinedAt: new Date()
       });
-      person.rollNumber = rollNumber || '';
-      person.batch = batch || '';
-      person.major = major || '';
     }
 
     await classData.save();
 
+    const person = {
+      id: personId,
+      name: personName,
+      email: inviteeEmail.toLowerCase(),
+      role,
+      pinned: false
+    };
+
     res.json({ 
       success: true,
       person,
-      message: `Invite sent to ${email}`
+      message: `${role === 'staff' ? 'Staff member' : 'Student'} added successfully to the class`
     });
   } catch (error) {
     console.error('Error inviting person:', error.message, error.stack);
@@ -397,6 +551,7 @@ router.post('/:classId/invite/staff/:staffId', async (req, res) => {
 router.delete('/:classId/people/:personId/staff/:staffId', async (req, res) => {
   try {
     const { classId, personId, staffId } = req.params;
+    const { email } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(classId)) {
       return res.status(400).json({ 
@@ -413,8 +568,9 @@ router.delete('/:classId/people/:personId/staff/:staffId', async (req, res) => {
       });
     }
 
-    // Verify if the staffId is part of the class
-    const isAuthorized = classData.staffId === staffId || classData.staff.some(s => s.staffId === staffId);
+    // Use helper function
+    const isAuthorized = checkStaffAccess(classData, staffId, email);
+    
     if (!isAuthorized) {
       return res.status(403).json({ 
         success: false,
@@ -423,8 +579,8 @@ router.delete('/:classId/people/:personId/staff/:staffId', async (req, res) => {
     }
 
     // Check if person exists in staff or students
-    const staffIndex = classData.staff.findIndex(s => s.staffId === personId);
-    const studentIndex = classData.students.findIndex(s => s.studentId === personId);
+    const staffIndex = classData.staff ? classData.staff.findIndex(s => s.staffId === personId) : -1;
+    const studentIndex = classData.students ? classData.students.findIndex(s => s.studentId === personId) : -1;
 
     if (staffIndex === -1 && studentIndex === -1) {
       return res.status(404).json({ 
@@ -521,7 +677,7 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// Add this route for enrollment verification
+// Check if student is enrolled
 router.get('/:classId/students/:studentId', async (req, res) => {
   try {
     const { classId, studentId } = req.params;
@@ -532,7 +688,7 @@ router.get('/:classId/students/:studentId', async (req, res) => {
       return res.json({ isEnrolled: false });
     }
 
-    const isEnrolled = classData.students.some(s => 
+    const isEnrolled = classData.students && classData.students.some(s => 
       s.studentId === studentId || s.email === email
     );
 
@@ -546,6 +702,7 @@ router.get('/:classId/students/:studentId', async (req, res) => {
   }
 });
 
+// Get people in class (for students)
 router.get('/:classId/people/student/:studentId', async (req, res) => {
   try {
     const { classId, studentId } = req.params;
@@ -568,8 +725,8 @@ router.get('/:classId/people/student/:studentId', async (req, res) => {
       });
     }
 
-    // Verify student enrollment (more flexible check)
-    const isEnrolled = classData.students.some(student => 
+    // Verify student enrollment
+    const isEnrolled = classData.students && classData.students.some(student => 
       (student.studentId === studentId || student.email === email)
     );
 
@@ -611,11 +768,12 @@ router.get('/:classId/people/student/:studentId', async (req, res) => {
   }
 });
 
-// New POST route to add a student to a classroom
+// Add a single student to a classroom
 router.post('/:classId/people/staff/:staffId', async (req, res) => {
   try {
     const { classId, staffId } = req.params;
     const { studentEmail } = req.body;
+    const { email: staffEmail } = req.query;
 
     // Validate input
     if (!studentEmail) {
@@ -635,7 +793,7 @@ router.post('/:classId/people/staff/:staffId', async (req, res) => {
     }
 
     // Verify if the staffId is part of the class
-      const isAuthorized = classData.staffId === staffId || classData.staff.some(s => s.staffId === staffId);
+    const isAuthorized = checkStaffAccess(classData, staffId, staffEmail);
     if (!isAuthorized) {
       return res.status(403).json({ 
         success: false,
@@ -644,7 +802,7 @@ router.post('/:classId/people/staff/:staffId', async (req, res) => {
     }
 
     // Find the student by email
-    const student = await Student.findOne({ email: studentEmail });
+    const student = await Student.findOne({ email: studentEmail.toLowerCase() });
     if (!student) {
       return res.status(404).json({ 
         success: false,
@@ -653,7 +811,11 @@ router.post('/:classId/people/staff/:staffId', async (req, res) => {
     }
 
     // Check if the student is already in the classroom
-    const alreadyJoined = classData.students.some(s => s.studentId === student._id.toString());
+    const alreadyJoined = classData.students && classData.students.some(s => 
+      s.studentId === student._id.toString() || 
+      s.email.toLowerCase() === studentEmail.toLowerCase()
+    );
+    
     if (alreadyJoined) {
       return res.status(400).json({ 
         success: false,
@@ -662,21 +824,28 @@ router.post('/:classId/people/staff/:staffId', async (req, res) => {
     }
 
     // Add the student to the classroom
+    if (!classData.students) classData.students = [];
+    
     classData.students.push({
       studentId: student._id.toString(),
       name: student.name || studentEmail.split('@')[0] || 'Unknown',
-      email: studentEmail,
+      email: studentEmail.toLowerCase(),
       rollNumber: student.rollNumber || '',
       batch: student.batch || '',
       major: student.major || '',
       joinedAt: new Date()
     });
+    
     await classData.save();
 
     res.status(200).json({ 
       success: true,
       message: `Student ${student.email} successfully added to class ${classId}`,
-      data: { studentId: student._id, classroomId: classId }
+      data: { 
+        studentId: student._id, 
+        classroomId: classId,
+        name: student.name || studentEmail.split('@')[0]
+      }
     });
   } catch (err) {
     console.error('Error adding student to classroom:', err);
@@ -687,98 +856,7 @@ router.post('/:classId/people/staff/:staffId', async (req, res) => {
   }
 });
 
-
-// Existing GET route to fetch all students
-router.get('/', async (req, res) => {
-  try {
-    const students = await Student.find({});
-    res.json(students);
-  } catch (err) {
-    console.error('Error fetching students:', err);
-    res.status(500).json({ 
-      success: false,
-      error: 'Failed to fetch students: ' + err.message 
-    });
-  }
-});
-
-
-
-router.post('/:classId/people/staff/:staffId', async (req, res) => {
-  try {
-    const { classId, staffId } = req.params;
-    const { studentEmail } = req.body;
-
-    // Validate input
-    if (!studentEmail) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Student email is required' 
-      });
-    }
-
-    // Check if the classroom exists
-    const classData = await Class.findById(classId);
-    if (!classData) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Class not found' 
-      });
-    }
-
-    // Verify if the staffId is part of the class
-    const isAuthorized = classData.staffId === staffId || classData.staff.some(s => s.staffId === staffId);
-    if (!isAuthorized) {
-      return res.status(403).json({ 
-        success: false,
-        error: 'Unauthorized: Staff member does not have access to this class' 
-      });
-    }
-
-    // Find the student by email
-    const student = await Student.findOne({ email: studentEmail });
-    if (!student) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Student not found with the provided email' 
-      });
-    }
-
-    // Check if the student is already in the classroom
-    const alreadyJoined = classData.students.some(s => s.studentId === student._id.toString());
-    if (alreadyJoined) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Student is already in the classroom' 
-      });
-    }
-
-    // Add the student to the classroom
-    classData.students.push({
-      studentId: student._id.toString(),
-      name: student.name || studentEmail.split('@')[0] || 'Unknown',
-      email: studentEmail,
-      rollNumber: student.rollNumber || '',
-      batch: student.batch || '',
-      major: student.major || '',
-      joinedAt: new Date()
-    });
-    await classData.save();
-
-    res.status(200).json({ 
-      success: true,
-      message: `Student ${student.email} successfully added to class ${classId}`,
-      data: { studentId: student._id, classroomId: classId }
-    });
-  } catch (err) {
-    console.error('Error adding student to classroom:', err);
-    res.status(500).json({ 
-      success: false,
-      error: 'Failed to add student: ' + err.message 
-    });
-  }
-});
-
+// Get student's classes
 router.get('/student/:studentId', async (req, res) => {
   try {
     const { studentId } = req.params;
@@ -795,10 +873,10 @@ router.get('/student/:studentId', async (req, res) => {
 
     // Find classes where the student's email is in the students array
     const studentClasses = await Class.find({
-      'students.email': email
+      'students.email': email.toLowerCase()
     }).sort({ createdAt: -1 });
 
-    console.log('Found classes:', studentClasses);
+    console.log('Found classes:', studentClasses.length);
     res.json({ 
       success: true,
       classes: studentClasses 
@@ -812,12 +890,12 @@ router.get('/student/:studentId', async (req, res) => {
   }
 });
 
-
 // Bulk add students to a class
 router.post('/:classId/people/bulk/staff/:staffId', async (req, res) => {
   try {
     const { classId, staffId } = req.params;
     const { studentEmails } = req.body;
+    const { email: staffEmail } = req.query;
 
     // Validate input
     if (!studentEmails || !Array.isArray(studentEmails)) {
@@ -840,7 +918,7 @@ router.post('/:classId/people/bulk/staff/:staffId', async (req, res) => {
     }
 
     // Verify if the staffId is part of the class
-    const isAuthorized = classData.staffId === staffId || classData.staff.some(s => s.staffId === staffId);
+    const isAuthorized = checkStaffAccess(classData, staffId, staffEmail);
     if (!isAuthorized) {
       return res.status(403).json({ 
         success: false,
@@ -855,32 +933,36 @@ router.post('/:classId/people/bulk/staff/:staffId', async (req, res) => {
     for (const email of uniqueEmails) {
       try {
         // Validate email format
-        if (!email || !email.endsWith('@gmail.com')) {
+        if (!email || !email.includes('@')) {
           skippedEmails.push(email);
           continue;
         }
 
         // Find the student by email
-        const student = await Student.findOne({ email });
+        const student = await Student.findOne({ email: email.toLowerCase() });
         if (!student) {
           skippedEmails.push(email);
           continue;
         }
 
-        // Check if the student is already in the classroom by studentId or email
-        const alreadyJoined = classData.students.some(s => 
-          s.studentId === student._id.toString() || s.email.toLowerCase() === email.toLowerCase()
+        // Check if the student is already in the classroom
+        const alreadyJoined = classData.students && classData.students.some(s => 
+          s.studentId === student._id.toString() || 
+          s.email.toLowerCase() === email.toLowerCase()
         );
+        
         if (alreadyJoined) {
           skippedEmails.push(email);
           continue;
         }
 
         // Add the student to the classroom
+        if (!classData.students) classData.students = [];
+        
         classData.students.push({
           studentId: student._id.toString(),
           name: student.name || email.split('@')[0] || 'Unknown',
-          email,
+          email: email.toLowerCase(),
           rollNumber: student.rollNumber || '',
           batch: student.batch || '',
           major: student.major || '',
@@ -889,7 +971,7 @@ router.post('/:classId/people/bulk/staff/:staffId', async (req, res) => {
 
         addedStudents.push({
           studentId: student._id.toString(),
-          email,
+          email: email.toLowerCase(),
           name: student.name || email.split('@')[0] || 'Unknown'
         });
       } catch (error) {
@@ -916,5 +998,111 @@ router.post('/:classId/people/bulk/staff/:staffId', async (req, res) => {
   }
 });
 
+// Get all students in a class
+router.get('/:classId/students', async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { email: staffEmail, staffId } = req.query;
+
+    if (!mongoose.Types.ObjectId.isValid(classId)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid class ID format' 
+      });
+    }
+
+    const classData = await Class.findById(classId);
+    if (!classData) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Class not found' 
+      });
+    }
+
+    // Check access if staffId is provided
+    if (staffId) {
+      const isAuthorized = checkStaffAccess(classData, staffId, staffEmail);
+      if (!isAuthorized) {
+        return res.status(403).json({ 
+          success: false, 
+          error: 'Unauthorized access' 
+        });
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      students: classData.students || [] 
+    });
+  } catch (error) {
+    console.error('Error fetching students:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
+
+// Get classes by staff email (for shared classes)
+router.get('/staff/email/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Email is required' 
+      });
+    }
+
+    // Find classes where staff email is in the staff array
+    const classes = await Class.find({
+      'staff.email': email.toLowerCase()
+    }).sort({ createdAt: -1 });
+
+    res.json({ 
+      success: true,
+      classes 
+    });
+  } catch (error) {
+    console.error('Error fetching classes by staff email:', error.message, error.stack);
+    res.status(500).json({ 
+      success: false,
+      error: `Failed to fetch classes: ${error.message}`
+    });
+  }
+});
+
+// Debug endpoint to check staff access
+router.get('/:classId/access/:staffId', async (req, res) => {
+  try {
+    const { classId, staffId } = req.params;
+    const { email } = req.query;
+    
+    const classData = await Class.findById(classId);
+    if (!classData) {
+      return res.json({ hasAccess: false, reason: 'Class not found' });
+    }
+    
+    const isCreator = classData.staffId === staffId;
+    const isInStaffArray = classData.staff && classData.staff.some(s => 
+      s.staffId === staffId || 
+      s.email === email?.toLowerCase()
+    );
+    
+    res.json({
+      hasAccess: isCreator || isInStaffArray,
+      isCreator,
+      isInStaffArray,
+      classData: {
+        name: classData.name,
+        staffId: classData.staffId,
+        staff: classData.staff ? classData.staff.map(s => ({ email: s.email, staffId: s.staffId })) : []
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 module.exports = router;

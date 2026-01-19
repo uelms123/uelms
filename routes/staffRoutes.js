@@ -3,11 +3,13 @@ const router = express.Router();
 const admin = require('firebase-admin');
 const Staff = require('../models/Staff');
 const Student = require('../models/Students');
+const Class = require('../models/Class'); // Add this import
 
 // Add staff
+// In staffRoutes.js, update the POST /staff route
 router.post('/staff', async (req, res) => {
   try {
-    const { name, program, email } = req.body;
+    const { name, program, email, password, department } = req.body;
     
     if (!name) {
       return res.status(400).json({ 
@@ -23,11 +25,33 @@ router.post('/staff', async (req, res) => {
       });
     }
     
+    // CHANGED: Added validation for department/program
+    if (!program && !department) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Department/Program is required' 
+      });
+    }
+    
+    // Generate staff ID
+    const staffId = `staff_${email.split('@')[0]}_${Date.now().toString().slice(-6)}`;
+    
     const staff = new Staff({ 
+      staffId,
       name: name,
-      program: program || null, // Program is optional for staff
-      email: email.toLowerCase() 
+      department: department || program || '', // Use department or program
+      email: email.toLowerCase(),
+      tempPassword: password || `temp_${Date.now().toString().slice(-6)}`,
+      createdByAdmin: true
     });
+    
+    // Add to password history
+    staff.passwordHistory = [{
+      password: password || staff.tempPassword,
+      createdAt: new Date(),
+      createdBy: 'admin'
+    }];
+    
     await staff.save();
     
     res.status(201).json({ 
@@ -49,15 +73,327 @@ router.post('/staff', async (req, res) => {
   }
 });
 
+// NEW: Check if staff exists by email (for adding staff to classroom)
+router.get('/email/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Email is required' 
+      });
+    }
+    
+    // Find staff by email
+    const staff = await Staff.findOne({ email: email.toLowerCase() });
+    
+    if (!staff) {
+      return res.status(200).json({ 
+        exists: false,
+        message: 'Staff member not found in the system'
+      });
+    }
+    
+    res.status(200).json({ 
+      exists: true,
+      name: staff.name,
+      staffId: staff.staffId,
+      email: staff.email,
+      department: staff.department,
+      message: 'Staff member found'
+    });
+  } catch (error) {
+    console.error('Error checking staff:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to check staff'
+    });
+  }
+});
+
+// Get staff with passwords (for admin)
+router.get('/with-passwords', async (req, res) => {
+  try {
+    const staff = await Staff.find().select('+tempPassword +passwordHistory');
+    
+    // Format response to include password info
+    const staffWithPasswords = staff.map(user => {
+      const latestPassword = user.passwordHistory && user.passwordHistory.length > 0 
+        ? user.passwordHistory[user.passwordHistory.length - 1].password
+        : user.tempPassword || 'Not available';
+      
+      return {
+        ...user.toObject(),
+        displayPassword: latestPassword,
+        hasPasswordHistory: user.passwordHistory && user.passwordHistory.length > 0,
+        passwordHistoryCount: user.passwordHistory ? user.passwordHistory.length : 0,
+        lastPasswordUpdate: user.lastPasswordUpdated || user.createdAt,
+        // CHANGED: Map department to program for compatibility
+        program: user.department || ''
+      };
+    });
+    
+    res.status(200).json({
+      success: true,
+      count: staffWithPasswords.length,
+      staff: staffWithPasswords
+    });
+    
+  } catch (err) {
+    console.error('Error fetching staff with passwords:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch staff with passwords: ' + err.message
+    });
+  }
+});
+
+// Get single staff with password details
+router.get('/:email/password-details', async (req, res) => {
+  try {
+    const { email } = req.params;
+    
+    const staff = await Staff.findOne({ email: email.toLowerCase() })
+      .select('+tempPassword +passwordHistory');
+    
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        error: 'Staff not found'
+      });
+    }
+    
+    // Get the latest password
+    const latestPassword = staff.passwordHistory && staff.passwordHistory.length > 0 
+      ? staff.passwordHistory[staff.passwordHistory.length - 1].password
+      : staff.tempPassword || 'Not available';
+    
+    // Format password history
+    const formattedHistory = staff.passwordHistory ? staff.passwordHistory.map(record => ({
+      password: record.password,
+      date: record.createdAt.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      }),
+      createdBy: record.createdBy,
+      note: record.note || ''
+    })).reverse() : [];
+    
+    res.status(200).json({
+      success: true,
+      staff: {
+        name: staff.name,
+        email: staff.email,
+        department: staff.department,
+        program: staff.department, // For compatibility
+        currentPassword: latestPassword,
+        passwordHistory: formattedHistory,
+        lastUpdated: staff.lastPasswordUpdated || staff.createdAt,
+        hasPassword: !!latestPassword && latestPassword !== 'Not available'
+      }
+    });
+    
+  } catch (err) {
+    console.error('Error fetching password details:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch password details: ' + err.message
+    });
+  }
+});
+
 // Get staff
 router.get('/staff', async (req, res) => {
   try {
     const staff = await Staff.find();
-    res.status(200).json(staff);
+    // CHANGED: Map department to program for compatibility
+    const formattedStaff = staff.map(user => ({
+      ...user.toObject(),
+      program: user.department || ''
+    }));
+    res.status(200).json(formattedStaff);
   } catch (err) {
     res.status(500).json({ 
       success: false,
       error: 'Failed to fetch staff: ' + err.message 
+    });
+  }
+});
+
+// Add these routes to your staffRoutes.js file
+
+// Get staff classes (for admin PDF generation)
+// staffRoutes.js - Update the /:staffId/classes route (around line 96)
+router.get('/:staffId/classes', async (req, res) => {
+  try {
+    const { staffId } = req.params;
+    const { email } = req.query; // Add email parameter
+    
+    if (!staffId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Staff ID is required'
+      });
+    }
+
+    // Try to find staff by multiple fields
+    let staff = await Staff.findOne({
+      $or: [
+        { staffId: staffId },
+        { email: staffId },
+        { email: email } // Check by email query parameter
+      ]
+    });
+    
+    if (!staff && email) {
+      // If still not found, try just by email
+      staff = await Staff.findOne({ email: email.toLowerCase() });
+    }
+    
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        error: 'Staff not found'
+      });
+    }
+    
+    // Now we have the staff object, fetch their classes
+    let classes = [];
+    
+    // First try: Check if staff has createdClasses populated
+    if (staff.createdClasses && staff.createdClasses.length > 0) {
+      classes = await Class.find({ _id: { $in: staff.createdClasses } })
+        .sort({ createdAt: -1 });
+    }
+    
+    // If no classes found, fallback to querying Class collection
+    if (classes.length === 0) {
+      classes = await Class.find({
+        $or: [
+          { staffId: staff.staffId },
+          { 'staff.staffId': staff.staffId },
+          { 'staff.email': staff.email }
+        ]
+      }).sort({ createdAt: -1 });
+    }
+    
+    res.status(200).json({
+      success: true,
+      staffId: staff.staffId,
+      staffName: staff.name || 'Unknown',
+      staffEmail: staff.email,
+      staffDepartment: staff.department,
+      classes: classes,
+      count: classes.length
+    });
+    
+  } catch (err) {
+    console.error('Error fetching staff classes:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch staff classes: ' + err.message
+    });
+  }
+});
+
+// staffRoutes.js - Add new route for getting classes by email
+router.get('/email/:email/classes', async (req, res) => {
+  try {
+    const { email } = req.params;
+    
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email is required'
+      });
+    }
+
+    // Find staff by email
+    const staff = await Staff.findOne({ email: email.toLowerCase() });
+    
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        error: 'Staff not found with this email'
+      });
+    }
+    
+    // Fetch classes
+    let classes = [];
+    
+    // Try from createdClasses first
+    if (staff.createdClasses && staff.createdClasses.length > 0) {
+      classes = await Class.find({ _id: { $in: staff.createdClasses } })
+        .sort({ createdAt: -1 });
+    }
+    
+    // Fallback query
+    if (classes.length === 0) {
+      classes = await Class.find({
+        $or: [
+          { staffId: staff.staffId },
+          { 'staff.staffId': staff.staffId },
+          { 'staff.email': staff.email },
+          { staffId: staff.email } // Some classes might use email as staffId
+        ]
+      }).sort({ createdAt: -1 });
+    }
+    
+    res.status(200).json({
+      success: true,
+      staffId: staff.staffId,
+      staffName: staff.name,
+      staffEmail: staff.email,
+      staffDepartment: staff.department,
+      classes: classes,
+      count: classes.length
+    });
+    
+  } catch (err) {
+    console.error('Error fetching staff classes by email:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch staff classes: ' + err.message
+    });
+  }
+});
+
+// Get all staff with their classes count
+router.get('/with-classes', async (req, res) => {
+  try {
+    // Fetch all staff
+    const allStaff = await Staff.find();
+    
+    // Create an array with staff info and their classes count
+    const staffWithClasses = await Promise.all(allStaff.map(async (staff) => {
+      const classesCount = await Class.countDocuments({
+        $or: [
+          { staffId: staff.staffId },
+          { 'staff.staffId': staff.staffId }
+        ]
+      });
+      
+      return {
+        ...staff.toObject(),
+        program: staff.department || '', // For compatibility
+        classesCount: classesCount
+      };
+    }));
+    
+    res.status(200).json({
+      success: true,
+      staff: staffWithClasses
+    });
+    
+  } catch (err) {
+    console.error('Error fetching staff with classes:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch staff with classes: ' + err.message
     });
   }
 });
@@ -153,8 +489,8 @@ router.delete('/users', async (req, res) => {
 // Update user (staff or student)
 router.put('/users', async (req, res) => {
   try {
-    const { oldEmail, newEmail, type, newPassword, name, program } = req.body;
-    console.log('Update request received:', { oldEmail, newEmail, type, name, program });
+    const { oldEmail, newEmail, type, newPassword, name, program, department } = req.body;
+    console.log('Update request received:', { oldEmail, newEmail, type, name, program, department });
 
     if (!oldEmail || !newEmail || !type) {
       return res.status(400).json({ 
@@ -185,6 +521,14 @@ router.put('/users', async (req, res) => {
       });
     }
 
+    // CHANGED: For staff, require department/program
+    if (type === 'staff' && !program && !department) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Department/Program is required for staff' 
+      });
+    }
+
     // Get Firebase user by old email
     let user;
     try {
@@ -195,7 +539,7 @@ router.put('/users', async (req, res) => {
         return res.status(404).json({ 
           success: false,
           error: 'User not found in Firebase' 
-        });
+      });
       }
       throw err;
     }
@@ -226,7 +570,7 @@ router.put('/users', async (req, res) => {
     if (type === 'staff') {
       const updateFields = {};
       if (name) updateFields.name = name;
-      if (program !== undefined) updateFields.program = program;
+      if (program !== undefined) updateFields.department = program || department;
       if (oldEmail.toLowerCase() !== newEmail.toLowerCase()) {
         updateFields.email = newEmail.toLowerCase();
       }
@@ -296,7 +640,7 @@ router.post('/bulk-users', async (req, res) => {
 
     const results = [];
     for (const user of users) {
-      const { name, program, email, password } = user;
+      const { name, program, email, password, department } = user;
       
       // Basic validation
       if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
@@ -306,6 +650,12 @@ router.post('/bulk-users', async (req, res) => {
       
       if (!name) {
         results.push({ email, success: false, error: 'Name is required' });
+        continue;
+      }
+      
+      // CHANGED: For staff, require department/program
+      if (type === 'staff' && !program && !department) {
+        results.push({ email, success: false, error: 'Department/Program is required for staff' });
         continue;
       }
       
@@ -347,7 +697,7 @@ router.post('/bulk-users', async (req, res) => {
         if (type === 'staff') {
           const staffData = {
             name: name,
-            program: program || null,
+            department: department || program || '', // Use department or program
             email: lowerEmail
           };
           await Staff.updateOne(

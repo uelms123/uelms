@@ -1,7 +1,11 @@
-
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
+const admin = require('firebase-admin');
+require('dotenv').config();
+
 const classRoutes = require('./routes/classRoutes');
 const announcementRoutes = require('./routes/announcementRoutes');
 const unitRoutes = require('./routes/unitRoutes');
@@ -9,12 +13,20 @@ const assignmentRoutes = require('./routes/assignments');
 const submissionRoutes = require('./routes/submissions');
 const staffRoutes = require('./routes/staffRoutes');
 const studentRoutes = require('./routes/studentRoutes');
-const admin = require('firebase-admin');
 const messageRoutes = require('./routes/messages');
 const studLogin = require('./routes/activityRoutes');
-require('dotenv').config();
+const meetingRoutes = require('./routes/meetings');
+const programRoutes = require('./routes/programRoutes');
+const staffActivityRoutes = require('./routes/staffActivityRoutes');
+const googleMeetAttendanceRoutes = require('./routes/googleMeetAttendance');
+const staffMeetingsRoutes = require('./routes/staffMeetings');
 
-console.log('FIREBASE_PRIVATE_KEY:', process.env.FIREBASE_PRIVATE_KEY ? 'Defined' : 'Undefined');
+require('./models/files');
+require('./models/unit');
+const Staff = require('./models/Staff');
+const Student = require('./models/Students');
+const Class = require('./models/Class');
+const StaffActivity = require('./models/StaffActivity');
 
 const firebaseConfig = {
   projectId: process.env.FIREBASE_PROJECT_ID,
@@ -31,18 +43,36 @@ if (!firebaseConfig.projectId || !firebaseConfig.clientEmail || !firebaseConfig.
 
 admin.initializeApp({
   credential: admin.credential.cert(firebaseConfig),
+  storageBucket: 'uelms-378db.firebasestorage.app',
 });
+
+const bucket = admin.storage().bucket();
 
 const app = express();
 const port = process.env.PORT || 5000;
 
 app.use(express.urlencoded({ extended: true }));
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-app.use(express.json());
+app.use(express.json({ limit: '100mb' }));
+
+// app.use(cors({
+//   origin: 'http://localhost:3000',
+//   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+//   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+//   credentials: true
+// }));
+
+app.options(/.*/, cors());
+
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+app.use('/uploads', express.static(uploadsDir));
+
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.path}`);
+  next();
+});
 
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
@@ -52,48 +82,46 @@ mongoose.connect(process.env.MONGODB_URI)
     console.error('MongoDB connection error:', err);
   });
 
-const path = require('path');
-const fs = require('fs');
-
-// Create 'uploads' directory if it doesn't exist
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-// Serve static files from the 'uploads' directory
-app.use('/uploads', express.static(uploadsDir));
-
-// Log all requests for debugging
-app.use((req, res, next) => {
-  console.log(`${req.method} request to ${req.path}`);
-  next();
-});
-
-// Import models
-const Staff = require('./models/Staff');
-const Student = require('./models/Students');
-const Class = require('./models/Class'); // Added for class tracking
-
-// Import routes
 app.use('/api/classes', classRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/units', unitRoutes);
 app.use('/api/assignments', assignmentRoutes);
 app.use('/api/submissions', submissionRoutes);
-app.use('/api', staffRoutes); // This includes adminRoutes functionality
+app.use('/api/staff', staffRoutes);
 app.use('/api/students', studentRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/activity', studLogin);
+app.use('/api/meetings', meetingRoutes);
+app.use('/api/programs', programRoutes);
+app.use('/api/staff-activity', staffActivityRoutes);
+app.use('/api/google-meet', require('./routes/googleMeetAttendance'));
+app.use('/api/staff-meetings', staffMeetingsRoutes);
 
-// NEW ROUTES FOR PASSWORD FUNCTIONALITY
 
-// Get staff with passwords (for admin PDF generation)
 app.get('/api/staff-with-passwords', async (req, res) => {
   try {
     console.log('Fetching staff with passwords...');
-    const staff = await Staff.find({}, '-_id -__v');
+    let staff = await Staff.find({}, '-__v').lean();
     console.log(`Found ${staff.length} staff members`);
+    
+    for (let s of staff) {
+      if (s.staffId) {
+        const summary = await StaffActivity.getStaffSummary(s.staffId);
+        s.activity = {
+          streams: summary.totalStreams || 0,
+          assignments: summary.totalAssignments || 0,
+          assessments: summary.totalAssessments || 0,
+          visits: summary.totalVisits || 0,
+        };
+        
+        const classes = await Class.find({ staffId: s.staffId }).select('name subject section createdAt').lean();
+        s.classes = classes || [];
+      } else {
+        s.activity = { streams: 0, assignments: 0, assessments: 0, visits: 0 };
+        s.classes = [];
+      }
+    }
+
     res.status(200).json(staff);
   } catch (err) {
     console.error('Error fetching staff with passwords:', err);
@@ -104,7 +132,6 @@ app.get('/api/staff-with-passwords', async (req, res) => {
   }
 });
 
-// Get students with passwords (for admin PDF generation)
 app.get('/api/students-with-passwords', async (req, res) => {
   try {
     console.log('Fetching students with passwords...');
@@ -120,18 +147,45 @@ app.get('/api/students-with-passwords', async (req, res) => {
   }
 });
 
-// NEW ROUTE: Get staff classes for PDF
-app.get('/api/staff/:staffId/classes', async (req, res) => {
+app.get('/api/staff/:identifier/classes', async (req, res) => {
   try {
-    const { staffId } = req.params;
-    console.log('Fetching classes for staff:', staffId);
+    const { identifier } = req.params;
+    console.log('Fetching classes for staff identifier:', identifier);
     
-    const classes = await Class.find({ staffId }).sort({ createdAt: -1 });
+    let staff = null;
+    
+    if (identifier.length > 20) {
+      staff = await Staff.findOne({ staffId: identifier });
+    }
+    
+    if (!staff && identifier.includes('@')) {
+      staff = await Staff.findOne({ email: identifier.toLowerCase() });
+    }
+    
+    if (!staff && mongoose.Types.ObjectId.isValid(identifier)) {
+      staff = await Staff.findById(identifier);
+    }
+    
+    let classes = [];
+    
+    if (staff && staff.staffId) {
+      classes = await Class.find({ staffId: staff.staffId }).sort({ createdAt: -1 });
+    } else {
+      classes = await Class.find({ 
+        $or: [
+          { createdBy: identifier.toLowerCase() },
+          { 'staff.email': identifier.toLowerCase() }
+        ]
+      }).sort({ createdAt: -1 });
+    }
+    
+    console.log(`Found ${classes.length} classes for ${identifier}`);
     
     res.status(200).json({
       success: true,
       classes,
-      count: classes.length
+      count: classes.length,
+      staffFound: !!staff
     });
   } catch (err) {
     console.error('Error fetching staff classes:', err);
@@ -142,7 +196,77 @@ app.get('/api/staff/:staffId/classes', async (req, res) => {
   }
 });
 
-// FIXED: Add staff with password (with Firebase user creation)
+app.get('/api/staff/email/:email/classes', async (req, res) => {
+  try {
+    const { email } = req.params;
+    console.log('Fetching classes for staff email:', email);
+    
+    const classes = await Class.find({ 
+      $or: [
+        { createdBy: email.toLowerCase() },
+        { 'staff.email': email.toLowerCase() }
+      ]
+    }).sort({ createdAt: -1 });
+    
+    console.log(`Found ${classes.length} classes for email ${email}`);
+    
+    res.status(200).json({
+      success: true,
+      classes,
+      count: classes.length
+    });
+  } catch (err) {
+    console.error('Error fetching classes by email:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch classes by email: ' + err.message 
+    });
+  }
+});
+
+app.get('/api/classes', async (req, res) => {
+  try {
+    const { staffId, email, search, limit = 100 } = req.query;
+    
+    const query = {};
+    
+    if (staffId) {
+      query.staffId = staffId;
+    }
+    
+    if (email) {
+      query.$or = [
+        { createdBy: email.toLowerCase() },
+        { 'staff.email': email.toLowerCase() }
+      ];
+    }
+    
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { subject: { $regex: search, $options: 'i' } },
+        { section: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    const classes = await Class.find(query)
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit));
+    
+    res.status(200).json({
+      success: true,
+      classes,
+      count: classes.length
+    });
+  } catch (err) {
+    console.error('Error fetching classes:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch classes: ' + err.message 
+    });
+  }
+});
+
 app.post('/api/staff-with-password', async (req, res) => {
   let firebaseUser = null;
   
@@ -174,7 +298,6 @@ app.post('/api/staff-with-password', async (req, res) => {
     
     const lowerEmail = email.toLowerCase().trim();
     
-    // Check if staff already exists in MongoDB
     const existingStaff = await Staff.findOne({ email: lowerEmail });
     if (existingStaff) {
       return res.status(400).json({ 
@@ -183,13 +306,11 @@ app.post('/api/staff-with-password', async (req, res) => {
       });
     }
     
-    // Check if user exists in Firebase
     try {
       firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
       console.log('Firebase user already exists:', firebaseUser.uid);
     } catch (firebaseErr) {
       if (firebaseErr.code === 'auth/user-not-found') {
-        // Create Firebase user if doesn't exist
         try {
           firebaseUser = await admin.auth().createUser({
             email: lowerEmail,
@@ -214,9 +335,8 @@ app.post('/api/staff-with-password', async (req, res) => {
       }
     }
     
-    // Create staff in MongoDB with Firebase UID as staffId
     const staff = new Staff({ 
-      staffId: firebaseUser.uid, // Use Firebase UID
+      staffId: firebaseUser.uid,
       name: name,
       program: program || null,
       email: lowerEmail,
@@ -238,7 +358,6 @@ app.post('/api/staff-with-password', async (req, res) => {
   } catch (err) {
     console.error('Error adding staff with password:', err);
     
-    // Cleanup Firebase user if MongoDB save fails
     if (firebaseUser) {
       try {
         await admin.auth().deleteUser(firebaseUser.uid);
@@ -277,7 +396,6 @@ app.post('/api/staff-with-password', async (req, res) => {
   }
 });
 
-// FIXED: Add student with password (with Firebase user creation)
 app.post('/api/students-with-password', async (req, res) => {
   let firebaseUser = null;
   
@@ -316,7 +434,6 @@ app.post('/api/students-with-password', async (req, res) => {
     
     const lowerEmail = email.toLowerCase().trim();
     
-    // Check if student already exists in MongoDB
     const existingStudent = await Student.findOne({ email: lowerEmail });
     if (existingStudent) {
       return res.status(400).json({ 
@@ -325,13 +442,11 @@ app.post('/api/students-with-password', async (req, res) => {
       });
     }
     
-    // Check if user exists in Firebase
     try {
       firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
       console.log('Firebase user already exists:', firebaseUser.uid);
     } catch (firebaseErr) {
       if (firebaseErr.code === 'auth/user-not-found') {
-        // Create Firebase user if doesn't exist
         try {
           firebaseUser = await admin.auth().createUser({
             email: lowerEmail,
@@ -356,9 +471,8 @@ app.post('/api/students-with-password', async (req, res) => {
       }
     }
     
-    // Create student in MongoDB with Firebase UID as studentId
     const student = new Student({ 
-      studentId: firebaseUser.uid, // Use Firebase UID
+      studentId: firebaseUser.uid,
       name: name,
       program: program,
       email: lowerEmail,
@@ -380,7 +494,6 @@ app.post('/api/students-with-password', async (req, res) => {
   } catch (err) {
     console.error('Error adding student with password:', err);
     
-    // Cleanup Firebase user if MongoDB save fails
     if (firebaseUser) {
       try {
         await admin.auth().deleteUser(firebaseUser.uid);
@@ -419,12 +532,184 @@ app.post('/api/students-with-password', async (req, res) => {
   }
 });
 
-// Clear temporary passwords (security cleanup)
+app.post('/api/bulk-users-with-passwords', async (req, res) => {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  
+  try {
+    const type = req.query.type; 
+    const users = req.body.users;
+
+    console.log('Bulk user creation with passwords:', { type, userCount: users?.length });
+
+    if (!type || !['staff', 'student'].includes(type)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid or missing type (staff|student).' 
+      });
+    }
+    
+    if (!Array.isArray(users) || users.length === 0) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'No users provided' 
+      });
+    }
+
+    const results = [];
+    const createdFirebaseUsers = [];
+    
+    for (const user of users) {
+      const { name, program, email, password } = user;
+      
+      if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
+        results.push({ email: email || 'unknown', success: false, error: 'Email and password are required' });
+        continue;
+      }
+      
+      if (!name) {
+        results.push({ email, success: false, error: 'Name is required' });
+        continue;
+      }
+      
+      if (type === 'student' && !program) {
+        results.push({ email, success: false, error: 'Program is required for students' });
+        continue;
+      }
+      
+      if (password.length < 6) {
+        results.push({ email, success: false, error: 'Password must be at least 6 characters' });
+        continue;
+      }
+      
+      if (!emailRegex.test(email)) {
+        results.push({ email, success: false, error: 'Invalid email format' });
+        continue;
+      }
+
+      let lowerEmail = email.toLowerCase();
+      let firebaseUser = null;
+
+      try {
+        try {
+          firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
+          console.log('Firebase user already exists:', firebaseUser.uid);
+        } catch (err) {
+          if (err.code === 'auth/user-not-found') {
+            try {
+              firebaseUser = await admin.auth().createUser({ 
+                email: lowerEmail, 
+                password,
+                displayName: name,
+                emailVerified: false,
+                disabled: false
+              });
+              createdFirebaseUsers.push({ uid: firebaseUser.uid, email: lowerEmail });
+              console.log('Firebase user created:', firebaseUser.uid);
+            } catch (createErr) {
+              results.push({ email: lowerEmail, success: false, error: 'Firebase creation failed: ' + createErr.message });
+              continue;
+            }
+          } else {
+            throw err;
+          }
+        }
+
+        if (type === 'staff') {
+          const existingStaff = await Staff.findOne({ email: lowerEmail });
+          if (existingStaff) {
+            results.push({ email: lowerEmail, success: false, error: 'Staff already exists in database' });
+            continue;
+          }
+        } else {
+          const existingStudent = await Student.findOne({ email: lowerEmail });
+          if (existingStudent) {
+            results.push({ email: lowerEmail, success: false, error: 'Student already exists in database' });
+            continue;
+          }
+        }
+
+        if (type === 'staff') {
+          const staffData = {
+            staffId: firebaseUser.uid,
+            name: name,
+            program: program || null,
+            email: lowerEmail,
+            tempPassword: password,
+            createdAt: new Date(),
+            createdByAdmin: true,
+            createdTimestamp: new Date().toISOString()
+          };
+          await Staff.create(staffData);
+        } else {
+          const studentData = {
+            studentId: firebaseUser.uid,
+            name: name,
+            program: program,
+            email: lowerEmail,
+            tempPassword: password,
+            createdAt: new Date(),
+            createdByAdmin: true,
+            createdTimestamp: new Date().toISOString()
+          };
+          await Student.create(studentData);
+        }
+
+        results.push({ email: lowerEmail, success: true });
+      } catch (err) {
+        console.error(`Error creating user ${lowerEmail}:`, err.message);
+        results.push({ email: lowerEmail, success: false, error: err.message });
+        
+        if (firebaseUser && !createdFirebaseUsers.some(u => u.uid === firebaseUser.uid)) {
+          try {
+            await admin.auth().deleteUser(firebaseUser.uid);
+          } catch (cleanupErr) {
+            console.error('Error cleaning up Firebase user:', cleanupErr);
+          }
+        }
+      }
+    }
+
+    if (results.some(r => !r.success) && createdFirebaseUsers.length > 0) {
+      console.log('Cleaning up Firebase users due to errors...');
+      for (const fbUser of createdFirebaseUsers) {
+        const correspondingResult = results.find(r => r.email === fbUser.email);
+        if (!correspondingResult || !correspondingResult.success) {
+          try {
+            await admin.auth().deleteUser(fbUser.uid);
+            console.log('Cleaned up Firebase user:', fbUser.uid);
+          } catch (cleanupErr) {
+            console.error('Failed to cleanup Firebase user:', cleanupErr);
+          }
+        }
+      }
+    }
+
+    const successCount = results.filter(r => r.success).length;
+    console.log(`Bulk creation completed: ${successCount}/${users.length} successful`);
+    
+    res.status(200).json({ 
+      success: true,
+      message: `Bulk ${type} creation completed`,
+      stats: {
+        total: users.length,
+        successful: successCount,
+        failed: users.length - successCount
+      },
+      results 
+    });
+  } catch (err) {
+    console.error('Error in bulk user creation:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to bulk create users: ' + err.message 
+    });
+  }
+});
+
 app.post('/api/clear-temp-passwords', async (req, res) => {
   try {
     console.log('Clearing temporary passwords...');
     
-    // Clear passwords older than 24 hours
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     
     const staffResult = await Staff.updateMany(
@@ -465,229 +750,18 @@ app.post('/api/clear-temp-passwords', async (req, res) => {
   }
 });
 
-// FIXED: Bulk user creation with passwords (staff or student)
-app.post('/api/bulk-users-with-passwords', async (req, res) => {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  
-  try {
-    const type = req.query.type; 
-    const users = req.body.users;
-
-    console.log('Bulk user creation with passwords:', { type, userCount: users?.length });
-
-    if (!type || !['staff', 'student'].includes(type)) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Invalid or missing type (staff|student).' 
-      });
+app.get('/api/health', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Server is running',
+    timestamp: new Date().toISOString(),
+    services: {
+      mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      firebase: 'initialized'
     }
-    
-    if (!Array.isArray(users) || users.length === 0) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'No users provided' 
-      });
-    }
-
-    const results = [];
-    const createdFirebaseUsers = []; // Track created users for cleanup
-    
-    for (const user of users) {
-      const { name, program, email, password } = user;
-      
-      // Basic validation
-      if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
-        results.push({ email: email || 'unknown', success: false, error: 'Email and password are required' });
-        continue;
-      }
-      
-      if (!name) {
-        results.push({ email, success: false, error: 'Name is required' });
-        continue;
-      }
-      
-      if (type === 'student' && !program) {
-        results.push({ email, success: false, error: 'Program is required for students' });
-        continue;
-      }
-      
-      if (password.length < 6) {
-        results.push({ email, success: false, error: 'Password must be at least 6 characters' });
-        continue;
-      }
-      
-      if (!emailRegex.test(email)) {
-        results.push({ email, success: false, error: 'Invalid email format' });
-        continue;
-      }
-
-      let lowerEmail = email.toLowerCase();
-      let firebaseUser = null;
-
-      try {
-        // Check if user already exists in Firebase
-        try {
-          firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
-          console.log('Firebase user already exists:', firebaseUser.uid);
-        } catch (err) {
-          if (err.code === 'auth/user-not-found') {
-            // Create Firebase user
-            try {
-              firebaseUser = await admin.auth().createUser({ 
-                email: lowerEmail, 
-                password,
-                displayName: name,
-                emailVerified: false,
-                disabled: false
-              });
-              createdFirebaseUsers.push({ uid: firebaseUser.uid, email: lowerEmail });
-              console.log('Firebase user created:', firebaseUser.uid);
-            } catch (createErr) {
-              results.push({ email: lowerEmail, success: false, error: 'Firebase creation failed: ' + createErr.message });
-              continue;
-            }
-          } else {
-            throw err;
-          }
-        }
-
-        // Check if exists in MongoDB
-        if (type === 'staff') {
-          const existingStaff = await Staff.findOne({ email: lowerEmail });
-          if (existingStaff) {
-            results.push({ email: lowerEmail, success: false, error: 'Staff already exists in database' });
-            continue;
-          }
-        } else {
-          const existingStudent = await Student.findOne({ email: lowerEmail });
-          if (existingStudent) {
-            results.push({ email: lowerEmail, success: false, error: 'Student already exists in database' });
-            continue;
-          }
-        }
-
-        // Add to MongoDB with Firebase UID
-        if (type === 'staff') {
-          const staffData = {
-            staffId: firebaseUser.uid,
-            name: name,
-            program: program || null,
-            email: lowerEmail,
-            tempPassword: password,
-            createdAt: new Date(),
-            createdByAdmin: true,
-            createdTimestamp: new Date().toISOString()
-          };
-          await Staff.create(staffData);
-        } else {
-          const studentData = {
-            studentId: firebaseUser.uid,
-            name: name,
-            program: program,
-            email: lowerEmail,
-            tempPassword: password,
-            createdAt: new Date(),
-            createdByAdmin: true,
-            createdTimestamp: new Date().toISOString()
-          };
-          await Student.create(studentData);
-        }
-
-        results.push({ email: lowerEmail, success: true });
-      } catch (err) {
-        console.error(`Error creating user ${lowerEmail}:`, err.message);
-        results.push({ email: lowerEmail, success: false, error: err.message });
-        
-        // Cleanup Firebase user if created
-        if (firebaseUser && !createdFirebaseUsers.some(u => u.uid === firebaseUser.uid)) {
-          try {
-            await admin.auth().deleteUser(firebaseUser.uid);
-          } catch (cleanupErr) {
-            console.error('Error cleaning up Firebase user:', cleanupErr);
-          }
-        }
-      }
-    }
-
-    // Cleanup any Firebase users that were created but MongoDB failed
-    if (results.some(r => !r.success) && createdFirebaseUsers.length > 0) {
-      console.log('Cleaning up Firebase users due to errors...');
-      for (const fbUser of createdFirebaseUsers) {
-        const correspondingResult = results.find(r => r.email === fbUser.email);
-        if (!correspondingResult || !correspondingResult.success) {
-          try {
-            await admin.auth().deleteUser(fbUser.uid);
-            console.log('Cleaned up Firebase user:', fbUser.uid);
-          } catch (cleanupErr) {
-            console.error('Failed to cleanup Firebase user:', cleanupErr);
-          }
-        }
-      }
-    }
-
-    const successCount = results.filter(r => r.success).length;
-    console.log(`Bulk creation completed: ${successCount}/${users.length} successful`);
-    
-    res.status(200).json({ 
-      success: true,
-      message: `Bulk ${type} creation completed`,
-      stats: {
-        total: users.length,
-        successful: successCount,
-        failed: users.length - successCount
-      },
-      results 
-    });
-  } catch (err) {
-    console.error('Error in bulk user creation:', err);
-    res.status(500).json({ 
-      success: false,
-      error: 'Failed to bulk create users: ' + err.message 
-    });
-  }
+  });
 });
 
-// Schedule cleanup job for temporary passwords (optional - using node-cron)
-const cron = require('node-cron');
-
-// Cleanup function
-const cleanupTempPasswords = async () => {
-  try {
-    console.log('Running scheduled temporary password cleanup...');
-    
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    
-    const staffResult = await Staff.updateMany(
-      { 
-        tempPassword: { $exists: true, $ne: null },
-        createdAt: { $lt: twentyFourHoursAgo }
-      },
-      { $unset: { tempPassword: "" } }
-    );
-    
-    const studentResult = await Student.updateMany(
-      { 
-        tempPassword: { $exists: true, $ne: null },
-        createdAt: { $lt: twentyFourHoursAgo }
-      },
-      { $unset: { tempPassword: "" } }
-    );
-    
-    console.log('Scheduled password cleanup completed:', {
-      staffCleared: staffResult.modifiedCount,
-      studentCleared: studentResult.modifiedCount,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Error in scheduled password cleanup:', error);
-  }
-};
-
-// Schedule cleanup to run every day at 3 AM (if you want automatic cleanup)
-// Uncomment the next line if you want automatic cleanup
-// cron.schedule('0 3 * * *', cleanupTempPasswords);
-
-// Test route for password functionality
 app.get('/api/test-passwords', async (req, res) => {
   try {
     const staffCount = await Staff.countDocuments({ tempPassword: { $exists: true, $ne: null } });
@@ -707,21 +781,109 @@ app.get('/api/test-passwords', async (req, res) => {
   }
 });
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: 'Server is running',
-    timestamp: new Date().toISOString(),
-    services: {
-      mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-      firebase: 'initialized'
+app.put('/api/users', async (req, res) => {
+  try {
+    const { oldEmail, newEmail, type, name, program, newPassword, tempPassword } = req.body;
+    
+    if (!oldEmail || !type) {
+      return res.status(400).json({
+        success: false,
+        error: 'Old email and type are required'
+      });
     }
-  });
+    
+    let Model, queryField;
+    if (type === 'staff') {
+      Model = Staff;
+      queryField = 'email';
+    } else {
+      Model = Student;
+      queryField = 'email';
+    }
+    
+    const user = await Model.findOne({ [queryField]: oldEmail.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: `${type} not found`
+      });
+    }
+    
+    if (name) user.name = name;
+    if (program !== undefined) user.program = program;
+    if (newEmail && newEmail !== oldEmail) {
+      const existing = await Model.findOne({ [queryField]: newEmail.toLowerCase() });
+      if (existing && existing._id.toString() !== user._id.toString()) {
+        return res.status(400).json({
+          success: false,
+          error: 'New email already exists'
+        });
+      }
+      user.email = newEmail.toLowerCase();
+    }
+    
+    if (tempPassword) {
+      user.tempPassword = tempPassword;
+      user.tempPasswordSetAt = new Date();
+    }
+    
+    await user.save();
+    
+    res.status(200).json({
+      success: true,
+      message: `${type} updated successfully`,
+      data: user
+    });
+  } catch (err) {
+    console.error('Error updating user:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update user: ' + err.message
+    });
+  }
 });
 
-// 404 handler (fixed without '*')
-app.use((req, res, next) => {
+app.delete('/api/users', async (req, res) => {
+  try {
+    const { email, type } = req.body;
+    
+    if (!email || !type) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email and type are required'
+      });
+    }
+    
+    let Model;
+    if (type === 'staff') {
+      Model = Staff;
+    } else {
+      Model = Student;
+    }
+    
+    const result = await Model.findOneAndDelete({ email: email.toLowerCase() });
+    
+    if (!result) {
+      return res.status(404).json({
+        success: false,
+        error: `${type} not found`
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: `${type} deleted successfully`
+    });
+  } catch (err) {
+    console.error('Error deleting user:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete user: ' + err.message
+    });
+  }
+});
+
+app.use('/', (req, res, next) => {
   res.status(404).json({
     success: false,
     message: 'Route not found',
@@ -729,7 +891,6 @@ app.use((req, res, next) => {
   });
 });
 
-// Global error handler
 app.use((err, req, res, next) => {
   console.error('Global error handler:', err.stack);
   res.status(500).json({
@@ -741,14 +902,10 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
-  console.log(`Password functionality endpoints:`);
-  console.log(`  GET  /api/staff-with-passwords`);
-  console.log(`  GET  /api/students-with-passwords`);
-  console.log(`  GET  /api/staff/:staffId/classes (NEW)`);
-  console.log(`  POST /api/staff-with-password`);
-  console.log(`  POST /api/students-with-password`);
-  console.log(`  POST /api/bulk-users-with-passwords?type=staff|student`);
-  console.log(`  POST /api/clear-temp-passwords`);
-  console.log(`  GET  /api/test-passwords`);
-  console.log(`  GET  /api/health`);
+  console.log(`CORS enabled for: https://www.uelms.com`);
+  console.log(`Activity Dashboard endpoints:`);
+  console.log(`  GET  /api/staff-activity/summary`);
+  console.log(`  GET  /api/staff-activity/all`);
+  console.log(`  GET  /api/staff-activity/staff/:staffId`);
+  console.log(`  GET  /api/staff/:identifier/classes`);
 });

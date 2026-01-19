@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Student = require('../models/Students');
+const Class = require('../models/Class');
 
 // Get all students (without passwords for security)
 router.get('/', async (req, res) => {
@@ -27,6 +28,84 @@ router.get('/with-passwords', async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: 'Failed to fetch students with passwords: ' + err.message 
+    });
+  }
+});
+
+// Get student with enrollment details and classes for PDF generation
+router.get('/:email/enrollment-details', async (req, res) => {
+  try {
+    const email = req.params.email.toLowerCase();
+    
+    // Get student details
+    const student = await Student.findOne({ email: email });
+    
+    if (!student) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Student not found' 
+      });
+    }
+    
+    // Get classes where this student is enrolled
+    const classes = await Class.find({
+      'students.email': email
+    }).select('name subject teacher staffId staff students createdAt');
+    
+    // Extract enrollment details
+    const enrolledClasses = [];
+    
+    classes.forEach(cls => {
+      // Find this specific student in the class
+      const studentInClass = cls.students.find(s => s.email === email);
+      
+      // Get staff details from the class
+      let staffEmail = '';
+      let staffName = '';
+      
+      if (cls.staff && cls.staff.length > 0) {
+        // Get the primary staff (first one)
+        const primaryStaff = cls.staff[0];
+        staffEmail = primaryStaff.email || '';
+        staffName = primaryStaff.name || cls.teacher || '';
+      } else {
+        staffName = cls.teacher || '';
+      }
+      
+      enrolledClasses.push({
+        className: cls.name || 'N/A',
+        subject: cls.subject || 'N/A',
+        instructor: staffName,
+        instructorEmail: staffEmail,
+        staffId: cls.staffId || 'N/A',
+        enrollmentDate: studentInClass ? studentInClass.joinedAt : cls.createdAt,
+        classCreatedAt: cls.createdAt,
+        studentData: studentInClass || {}
+      });
+    });
+    
+    res.status(200).json({
+      success: true,
+      student: {
+        studentId: student.studentId,
+        name: student.name,
+        email: student.email,
+        program: student.program,
+        tempPassword: student.tempPassword,
+        password: student.password,
+        createdAt: student.createdAt,
+        createdByAdmin: student.createdByAdmin,
+        enrollmentDate: student.createdAt // Fallback to account creation date
+      },
+      enrollments: enrolledClasses,
+      totalClasses: enrolledClasses.length
+    });
+    
+  } catch (err) {
+    console.error('Error fetching student enrollment details:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch student enrollment details: ' + err.message 
     });
   }
 });

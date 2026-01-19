@@ -4,7 +4,6 @@ const Assignment = require('../models/Assignment');
 const Submission = require('../models/Submission');
 const fs = require('fs');
 
-// Get all assignments for a class and staff
 router.get('/:classId/staff/:staffId', async (req, res) => {
   try {
     const assignments = await Assignment.find({
@@ -12,7 +11,6 @@ router.get('/:classId/staff/:staffId', async (req, res) => {
       staffId: req.params.staffId
     }).sort({ createdAt: -1 });
 
-    // Calculate unique student count for each assignment
     const assignmentsWithStudentCount = await Promise.all(
       assignments.map(async (assignment) => {
         const submissions = await Submission.find({ assignmentId: assignment._id });
@@ -34,7 +32,6 @@ router.get('/:classId/staff/:staffId', async (req, res) => {
   }
 });
 
-// Get all assignments for a class (for students)
 router.get('/:classId/student/:studentId', async (req, res) => {
   try {
     const assignments = await Assignment.find({
@@ -50,12 +47,10 @@ router.get('/:classId/student/:studentId', async (req, res) => {
   }
 });
 
-// Create a new assignment
 router.post('/staff/:staffId', async (req, res) => {
   try {
     const { meetLink, type } = req.body;
 
-    // Validate meetLink based on type
     let validatedMeetLink = meetLink;
     if (type?.includes('meet')) {
       if (!meetLink) {
@@ -83,12 +78,12 @@ router.post('/staff/:staffId', async (req, res) => {
     const assignment = new Assignment({
       classId: req.body.classId,
       staffId: req.params.staffId,
-      type: type,
+      type: 'assignment',
       title: req.body.title,
       description: req.body.description,
       assignmentType: req.body.assignmentType,
-      question: req.body.question,
-      formLink: req.body.formLink,
+      question: req.body.question || null,
+      mcqQuestions: req.body.mcqQuestions || [],
       meetTime: req.body.meetTime,
       meetLink: validatedMeetLink,
     });
@@ -104,7 +99,6 @@ router.post('/staff/:staffId', async (req, res) => {
   }
 });
 
-// Update an assignment
 router.put('/:id/staff/:staffId', async (req, res) => {
   try {
     const assignment = await Assignment.findOne({
@@ -115,7 +109,7 @@ router.put('/:id/staff/:staffId', async (req, res) => {
       return res.status(404).json({ message: 'Assignment not found or you are not authorized' });
     }
 
-    const { meetLink, type, title, description, assignmentType, question, formLink, meetTime } = req.body;
+    const { meetLink, type, title, description, assignmentType, question, mcqQuestions, meetTime } = req.body;
 
     let validatedMeetLink = meetLink || assignment.meetLink;
     if ((type || assignment.type).includes('meet')) {
@@ -141,12 +135,11 @@ router.put('/:id/staff/:staffId', async (req, res) => {
       }
     }
 
-    assignment.type = type || assignment.type;
     assignment.title = title || assignment.title;
     assignment.description = description || assignment.description;
     assignment.assignmentType = assignmentType || assignment.assignmentType;
-    assignment.question = question || assignment.question;
-    assignment.formLink = formLink || assignment.formLink;
+    assignment.question = question !== undefined ? question : assignment.question;
+    assignment.mcqQuestions = mcqQuestions || assignment.mcqQuestions;
     assignment.meetTime = meetTime || assignment.meetTime;
     assignment.meetLink = validatedMeetLink;
     assignment.updatedAt = Date.now();
@@ -162,7 +155,6 @@ router.put('/:id/staff/:staffId', async (req, res) => {
   }
 });
 
-// Delete an assignment
 router.delete('/:id/staff/:staffId', async (req, res) => {
   try {
     const assignment = await Assignment.findOne({
@@ -202,7 +194,6 @@ router.delete('/:id/staff/:staffId', async (req, res) => {
   }
 });
 
-// Get all submissions for an assignment
 router.get('/:id/submissions', async (req, res) => {
   try {
     const submissions = await Submission.find({ assignmentId: req.params.id })

@@ -9,7 +9,13 @@ const unitSchema = new mongoose.Schema({
     }) 
   },
   files: [{ type: mongoose.Schema.Types.ObjectId, ref: 'File' }], 
-  classId: { type: String, required: true }
+  classId: { type: String, required: true },
+  
+  createdBy: { type: String }, // staffId
+  createdByEmail: { type: String },
+  createdByName: { type: String },
+  createdAt: { type: Date, default: Date.now },
+  isAssessmentUnit: { type: Boolean, default: false }
 });
 
 module.exports = mongoose.model('Unit', unitSchema);

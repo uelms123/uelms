@@ -3,54 +3,69 @@ const router = express.Router();
 const Submission = require('../models/Submission');
 const Assignment = require('../models/Assignment');
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+const admin = require('firebase-admin');
+const mongoose = require('mongoose');
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'text/plain'
+    ];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type'), false);
+    }
   }
 });
-const upload = multer({ storage });
 
-// Get submission status for all assignments in a class for a student
+const getBucket = () => admin.storage().bucket();
+
 router.get('/status/:classId/student/:studentId', async (req, res) => {
   try {
-    const submissions = await Submission.find({
-      classId: req.params.classId,
-      studentId: req.params.studentId
-    })
-      .select('assignmentId submitted submissionDate answer files studentName grading')
-      .populate('files', 'name url type size _id');
+    const { classId, studentId } = req.params;
 
-    const status = {};
+    if (!mongoose.Types.ObjectId.isValid(classId)) {
+      return res.status(400).json({ message: 'Invalid class ID' });
+    }
+
+    const submissions = await Submission.find({ classId, studentId })
+      .select('assignmentId submissionDate answer files grading mcqAnswers')
+      .populate('files', 'name url type size _id')
+      .sort({ submissionDate: -1 });
+
+    const latestSubmissions = {};
     submissions.forEach(sub => {
-      if (!status[sub.assignmentId]) {
-        status[sub.assignmentId] = { submissions: [] };
-      }
-      // Only include submissions with content
-      if (sub.answer || sub.files.length > 0) {
-        status[sub.assignmentId].submissions.push({
-          _id: sub._id,
-          submitted: true,
-          submissionDate: sub.submissionDate,
-          answer: sub.answer,
-          files: sub.files,
-          studentName: sub.studentName,
-          grading: sub.grading || {}
-        });
+      const aid = sub.assignmentId.toString();
+      if (!latestSubmissions[aid] || sub.submissionDate > latestSubmissions[aid].submissionDate) {
+        latestSubmissions[aid] = sub;
       }
     });
 
-    const assignments = await Assignment.find({ classId: req.params.classId });
+    const assignments = await Assignment.find({ classId }).select('_id title assignmentType');
+
+    const status = {};
     assignments.forEach(assignment => {
-      if (!status[assignment._id]) {
-        status[assignment._id] = { submissions: [] };
-      }
+      const sub = latestSubmissions[assignment._id.toString()];
+      const hasContent = sub && (sub.answer || sub.files.length > 0 || (sub.mcqAnswers && sub.mcqAnswers.length > 0));
+
+      status[assignment._id] = {
+        assignmentTitle: assignment.title,
+        assignmentType: assignment.assignmentType,
+        submitted: !!hasContent,
+        submissionDate: sub?.submissionDate || null,
+        grading: sub?.grading || { marks: null },
+        hasContent: !!hasContent,
+        answer: sub?.answer || '',
+        mcqAnswers: sub?.mcqAnswers || [],
+        files: sub?.files || []
+      };
     });
 
     res.json(status);
@@ -62,38 +77,71 @@ router.get('/status/:classId/student/:studentId', async (req, res) => {
   }
 });
 
-// Create a new submission
-router.post('/', upload.array('files'), async (req, res) => {
+router.post('/', upload.array('files', 10), async (req, res) => {
   try {
-    const { assignmentId, classId, studentId, answer, studentName } = req.body;
+    const { assignmentId, classId, studentId, answer, studentName, mcqAnswers } = req.body;
 
-    // Validate required fields
     if (!assignmentId || !classId || !studentId) {
-      return res.status(400).json({ message: 'Missing required fields' });
+      return res.status(400).json({ message: 'Missing required fields: assignmentId, classId, studentId' });
     }
 
-    const files = req.files.map(file => ({
-      name: file.originalname,
-      path: file.path,
-      type: file.mimetype,
-      size: file.size,
-      url: `/uploads/${file.filename}`
-    }));
+    if (!mongoose.Types.ObjectId.isValid(assignmentId) || !mongoose.Types.ObjectId.isValid(classId)) {
+      return res.status(400).json({ message: 'Invalid assignment or class ID format' });
+    }
 
-    // Only create submission if there's content
-    if (!answer && files.length === 0) {
-      return res.status(400).json({ message: 'Submission must include an answer or files' });
+    let parsedMcqAnswers = [];
+    if (mcqAnswers) {
+      try {
+        parsedMcqAnswers = typeof mcqAnswers === 'string' ? JSON.parse(mcqAnswers) : mcqAnswers;
+      } catch (e) {
+        return res.status(400).json({ message: 'Invalid mcqAnswers format' });
+      }
+    }
+
+    const hasText = answer && answer.trim().length > 0;
+    const hasFiles = req.files && req.files.length > 0;
+    const hasMcq = Array.isArray(parsedMcqAnswers) && parsedMcqAnswers.length > 0;
+
+    if (!hasText && !hasFiles && !hasMcq) {
+      return res.status(400).json({ message: 'Submission must include an answer, files, or MCQ responses' });
+    }
+
+    const bucket = getBucket();
+    const uploadedFiles = [];
+
+    if (hasFiles) {
+      for (const file of req.files) {
+        const fileName = `submissions/${assignmentId}/${studentId}/${Date.now()}-${Math.round(Math.random() * 1E9)}-${file.originalname}`;
+        const fileRef = bucket.file(fileName);
+
+        await fileRef.save(file.buffer, {
+          metadata: { contentType: file.mimetype }
+        });
+
+        const [url] = await fileRef.getSignedUrl({
+          action: 'read',
+          expires: '03-01-2500'
+        });
+
+        uploadedFiles.push({
+          name: file.originalname,
+          type: file.mimetype,
+          size: file.size,
+          url
+        });
+      }
     }
 
     const submission = new Submission({
       assignmentId,
       classId,
       studentId,
-      answer,
-      files,
+      studentName: studentName || 'Student',
+      answer: hasText ? answer.trim() : (hasMcq ? JSON.stringify(parsedMcqAnswers) : ''),
+      mcqAnswers: hasMcq ? parsedMcqAnswers : [],
+      files: uploadedFiles,
       submitted: true,
       submissionDate: new Date(),
-      studentName,
       grading: {
         marks: null,
         comments: '',
@@ -104,13 +152,21 @@ router.post('/', upload.array('files'), async (req, res) => {
     });
 
     await submission.save();
-    res.status(201).json(submission);
+    await submission.populate('files', 'name url type size _id');
+
+    res.status(201).json({
+      message: 'Submission created successfully',
+      submission
+    });
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    console.error('Submission error:', err);
+    res.status(400).json({
+      message: 'Failed to create submission',
+      error: err.message
+    });
   }
 });
 
-// Delete a submission
 router.delete('/:id', async (req, res) => {
   try {
     const submission = await Submission.findById(req.params.id);
@@ -118,25 +174,26 @@ router.delete('/:id', async (req, res) => {
       return res.status(404).json({ message: 'Submission not found' });
     }
 
-    // Delete associated files from the filesystem
+    const bucket = getBucket();
+
     for (const file of submission.files) {
-      try {
-        if (file.path && fs.existsSync(file.path)) {
-          fs.unlinkSync(file.path);
+      if (file.url) {
+        try {
+          const fileName = decodeURIComponent(file.url.split('/o/')[1].split('?')[0]);
+          await bucket.file(fileName).delete();
+        } catch (err) {
+          console.error('Error deleting file from Firebase:', err);
         }
-      } catch (fileErr) {
-        console.error(`Failed to delete file ${file.path}:`, fileErr.message);
       }
     }
 
     await submission.deleteOne();
-    res.json({ message: 'Submission deleted' });
+    res.json({ message: 'Submission deleted successfully' });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ message: 'Failed to delete submission', error: err.message });
   }
 });
 
-// Delete a specific file from a submission
 router.delete('/:submissionId/file/:fileId', async (req, res) => {
   try {
     const submission = await Submission.findById(req.params.submissionId);
@@ -144,44 +201,44 @@ router.delete('/:submissionId/file/:fileId', async (req, res) => {
       return res.status(404).json({ message: 'Submission not found' });
     }
 
-    const fileIndex = submission.files.findIndex(file => file._id.toString() === req.params.fileId);
+    const fileIndex = submission.files.findIndex(f => f._id.toString() === req.params.fileId);
     if (fileIndex === -1) {
       return res.status(404).json({ message: 'File not found' });
     }
 
     const file = submission.files[fileIndex];
-    try {
-      if (file.path && fs.existsSync(file.path)) {
-        fs.unlinkSync(file.path);
+    const bucket = getBucket();
+
+    if (file.url) {
+      try {
+        const fileName = decodeURIComponent(file.url.split('/o/')[1].split('?')[0]);
+        await bucket.file(fileName).delete();
+      } catch (err) {
+        console.error('Error deleting file from Firebase:', err);
       }
-    } catch (fileErr) {
-      console.error(`Failed to delete file ${file.path}:`, fileErr.message);
     }
 
     submission.files.splice(fileIndex, 1);
+    await submission.save();
 
-    // Delete submission if it has no content left
-    if (!submission.answer && submission.files.length === 0) {
+    const hasContent = submission.answer || submission.files.length > 0 || submission.mcqAnswers.length > 0;
+    if (!hasContent) {
       await submission.deleteOne();
-      return res.json({ message: 'File and empty submission deleted successfully' });
+      return res.json({ message: 'File and empty submission deleted' });
     }
 
-    await submission.save();
     res.json({ message: 'File deleted successfully' });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ message: 'Failed to delete file', error: err.message });
   }
 });
 
-// Grade a submission (add marks and comments)
 router.put('/:id/grade', async (req, res) => {
   try {
-    const { marks, comments, gradedBy, maxMarks } = req.body;
-    
-    if (marks !== undefined && (marks < 0 || marks > (maxMarks || 100))) {
-      return res.status(400).json({ 
-        message: `Marks must be between 0 and ${maxMarks || 100}` 
-      });
+    const { marks, comments, gradedBy, maxMarks = 100 } = req.body;
+
+    if (marks !== undefined && (isNaN(marks) || marks < 0 || marks > maxMarks)) {
+      return res.status(400).json({ message: `Marks must be between 0 and ${maxMarks}` });
     }
 
     const submission = await Submission.findById(req.params.id);
@@ -191,46 +248,43 @@ router.put('/:id/grade', async (req, res) => {
 
     submission.grading = {
       marks: marks !== undefined ? Number(marks) : submission.grading.marks,
-      comments: comments || submission.grading.comments,
-      gradedBy: gradedBy || submission.grading.gradedBy,
+      comments: comments || submission.grading.comments || '',
+      gradedBy: gradedBy || submission.grading.gradedBy || 'Staff',
       gradedAt: new Date(),
-      maxMarks: maxMarks || submission.grading.maxMarks || 100
+      maxMarks: Number(maxMarks)
     };
 
     await submission.save();
-    
+
     res.json({
       success: true,
-      message: 'Submission graded successfully',
-      submission
+      message: 'Grade saved successfully',
+      grading: submission.grading
     });
   } catch (err) {
-    console.error('Error grading submission:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      message: 'Failed to grade submission',
-      error: err.message 
+      message: 'Failed to save grade',
+      error: err.message
     });
   }
 });
 
-// Get graded submissions for a student
 router.get('/graded/:studentId', async (req, res) => {
   try {
     const submissions = await Submission.find({
       studentId: req.params.studentId,
       'grading.marks': { $ne: null }
     })
-    .populate('assignmentId', 'title')
-    .populate('classId', 'name section')
-    .sort({ 'grading.gradedAt': -1 });
+      .populate('assignmentId', 'title assignmentType')
+      .populate('classId', 'name section')
+      .sort({ 'grading.gradedAt': -1 });
 
     res.json(submissions);
   } catch (err) {
-    res.status(500).json({ 
-      success: false,
+    res.status(500).json({
       message: 'Failed to fetch graded submissions',
-      error: err.message 
+      error: err.message
     });
   }
 });
