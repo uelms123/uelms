@@ -54,32 +54,12 @@ const port = process.env.PORT || 5000;
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '100mb' }));
 
-const allowedOrigins = [
-  'https://uelms.com',
-  'https://uelms.onrender.com'
-];
-
 app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin) {
-      console.log('CORS enabled for: no-origin request');
-      return callback(null, true);
-    }
-
-    if (allowedOrigins.includes(origin)) {
-      console.log(`CORS enabled for: ${origin}`);
-      callback(null, true);
-    } else {
-      console.log(`CORS blocked for: ${origin}`);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: 'https://uelms.onrender.com',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   credentials: true
 }));
-
-// app.options(/.*/, cors());
 
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
@@ -920,8 +900,7 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
-console.log('CORS enabled for the following origins:');
-allowedOrigins.forEach(origin => console.log(`- ${origin}`));
+  console.log(`CORS enabled for: https://uelms.onrender.com`);
   console.log(`Activity Dashboard endpoints:`);
   console.log(`  GET  /api/staff-activity/summary`);
   console.log(`  GET  /api/staff-activity/all`);
