@@ -56,17 +56,22 @@ app.use(express.json({ limit: '100mb' }));
 
 const allowedOrigins = [
   'https://uelms.com',
+  'https://www.uelms.com',
   'https://uelms.onrender.com'
 ];
 
 app.use(cors({
   origin: function (origin, callback) {
-    // allow requests with no origin (Postman, mobile apps)
-    if (!origin) return callback(null, true);
+    if (!origin) {
+      console.log('CORS enabled for: no-origin request');
+      return callback(null, true);
+    }
 
     if (allowedOrigins.includes(origin)) {
+      console.log(`CORS enabled for: ${origin}`);
       callback(null, true);
     } else {
+      console.log(`CORS blocked for: ${origin}`);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -74,7 +79,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   credentials: true
 }));
-
 
 // app.options(/.*/, cors());
 
@@ -917,7 +921,8 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
-  console.log(`CORS enabled for: https://www.uelms.com`);
+console.log('CORS enabled for the following origins:');
+allowedOrigins.forEach(origin => console.log(`- ${origin}`));
   console.log(`Activity Dashboard endpoints:`);
   console.log(`  GET  /api/staff-activity/summary`);
   console.log(`  GET  /api/staff-activity/all`);
