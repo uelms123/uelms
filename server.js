@@ -55,7 +55,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '100mb' }));
 
 app.use(cors({
-  origin: 'https://uelms.onrender.com',
+  origin: 'https://uelms.com ',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   credentials: true
@@ -900,7 +900,7 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
-  console.log(`CORS enabled for: https://uelms.onrender.com`);
+  console.log(`CORS enabled for: http://localhost:3000`);
   console.log(`Activity Dashboard endpoints:`);
   console.log(`  GET  /api/staff-activity/summary`);
   console.log(`  GET  /api/staff-activity/all`);
