@@ -3,121 +3,35 @@ const router = express.Router();
 const admin = require('firebase-admin');
 const Staff = require('../models/Staff');
 const Student = require('../models/Students');
-const Class = require('../models/Class'); // Add this import
+const Class = require('../models/Class');
 
-// Add staff
-// In staffRoutes.js, update the POST /staff route
-router.post('/staff', async (req, res) => {
+/* =====================================================
+   GET ALL STAFF
+   GET /api/staff
+===================================================== */
+router.get('/', async (req, res) => {
   try {
-    const { name, program, email, password, department } = req.body;
-    
-    if (!name) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Name is required' 
-      });
-    }
-    
-    if (!email) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Email is required' 
-      });
-    }
-    
-    // CHANGED: Added validation for department/program
-    if (!program && !department) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Department/Program is required' 
-      });
-    }
-    
-    // Generate staff ID
-    const staffId = `staff_${email.split('@')[0]}_${Date.now().toString().slice(-6)}`;
-    
-    const staff = new Staff({ 
-      staffId,
-      name: name,
-      department: department || program || '', // Use department or program
-      email: email.toLowerCase(),
-      tempPassword: password || `temp_${Date.now().toString().slice(-6)}`,
-      createdByAdmin: true
-    });
-    
-    // Add to password history
-    staff.passwordHistory = [{
-      password: password || staff.tempPassword,
-      createdAt: new Date(),
-      createdBy: 'admin'
-    }];
-    
-    await staff.save();
-    
-    res.status(201).json({ 
-      success: true,
-      message: 'Staff added successfully',
-      data: staff
-    });
+    const staff = await Staff.find().lean();
+    const formattedStaff = staff.map(s => ({
+      ...s,
+      program: s.department || '' // frontend compatibility
+    }));
+    res.status(200).json(formattedStaff);
   } catch (err) {
-    if (err.code === 11000) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Staff email already exists in database' 
-      });
-    }
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Failed to add staff: ' + err.message 
+      error: 'Failed to fetch staff: ' + err.message
     });
   }
 });
 
-// NEW: Check if staff exists by email (for adding staff to classroom)
-router.get('/email/:email', async (req, res) => {
-  try {
-    const { email } = req.params;
-    
-    if (!email) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Email is required' 
-      });
-    }
-    
-    // Find staff by email
-    const staff = await Staff.findOne({ email: email.toLowerCase() });
-    
-    if (!staff) {
-      return res.status(200).json({ 
-        exists: false,
-        message: 'Staff member not found in the system'
-      });
-    }
-    
-    res.status(200).json({ 
-      exists: true,
-      name: staff.name,
-      staffId: staff.staffId,
-      email: staff.email,
-      department: staff.department,
-      message: 'Staff member found'
-    });
-  } catch (error) {
-    console.error('Error checking staff:', error);
-    res.status(500).json({ 
-      success: false,
-      error: 'Failed to check staff'
-    });
-  }
-});
-
-// Get staff with passwords (for admin)
+/* =====================================================
+   GET ALL STAFF WITH PASSWORDS (FOR ADMIN)
+   GET /api/staff/with-passwords
+===================================================== */
 router.get('/with-passwords', async (req, res) => {
   try {
     const staff = await Staff.find().select('+tempPassword +passwordHistory');
-    
-    // Format response to include password info
     const staffWithPasswords = staff.map(user => {
       const latestPassword = user.passwordHistory && user.passwordHistory.length > 0 
         ? user.passwordHistory[user.passwordHistory.length - 1].password
@@ -129,7 +43,6 @@ router.get('/with-passwords', async (req, res) => {
         hasPasswordHistory: user.passwordHistory && user.passwordHistory.length > 0,
         passwordHistoryCount: user.passwordHistory ? user.passwordHistory.length : 0,
         lastPasswordUpdate: user.lastPasswordUpdated || user.createdAt,
-        // CHANGED: Map department to program for compatibility
         program: user.department || ''
       };
     });
@@ -139,7 +52,6 @@ router.get('/with-passwords', async (req, res) => {
       count: staffWithPasswords.length,
       staff: staffWithPasswords
     });
-    
   } catch (err) {
     console.error('Error fetching staff with passwords:', err);
     res.status(500).json({
@@ -149,11 +61,13 @@ router.get('/with-passwords', async (req, res) => {
   }
 });
 
-// Get single staff with password details
+/* =====================================================
+   GET STAFF PASSWORD DETAILS
+   GET /api/staff/:email/password-details
+===================================================== */
 router.get('/:email/password-details', async (req, res) => {
   try {
     const { email } = req.params;
-    
     const staff = await Staff.findOne({ email: email.toLowerCase() })
       .select('+tempPassword +passwordHistory');
     
@@ -164,12 +78,10 @@ router.get('/:email/password-details', async (req, res) => {
       });
     }
     
-    // Get the latest password
     const latestPassword = staff.passwordHistory && staff.passwordHistory.length > 0 
       ? staff.passwordHistory[staff.passwordHistory.length - 1].password
       : staff.tempPassword || 'Not available';
     
-    // Format password history
     const formattedHistory = staff.passwordHistory ? staff.passwordHistory.map(record => ({
       password: record.password,
       date: record.createdAt.toLocaleDateString('en-US', {
@@ -189,14 +101,13 @@ router.get('/:email/password-details', async (req, res) => {
         name: staff.name,
         email: staff.email,
         department: staff.department,
-        program: staff.department, // For compatibility
+        program: staff.department,
         currentPassword: latestPassword,
         passwordHistory: formattedHistory,
         lastUpdated: staff.lastPasswordUpdated || staff.createdAt,
         hasPassword: !!latestPassword && latestPassword !== 'Not available'
       }
     });
-    
   } catch (err) {
     console.error('Error fetching password details:', err);
     res.status(500).json({
@@ -206,32 +117,198 @@ router.get('/:email/password-details', async (req, res) => {
   }
 });
 
-// Get staff
-router.get('/staff', async (req, res) => {
+/* =====================================================
+   GET ALL STAFF WITH CLASSES COUNT
+   GET /api/staff/with-classes
+===================================================== */
+router.get('/with-classes', async (req, res) => {
   try {
-    const staff = await Staff.find();
-    // CHANGED: Map department to program for compatibility
-    const formattedStaff = staff.map(user => ({
-      ...user.toObject(),
-      program: user.department || ''
+    const allStaff = await Staff.find();
+    const staffWithClasses = await Promise.all(allStaff.map(async (staff) => {
+      const classesCount = await Class.countDocuments({
+        $or: [
+          { staffId: staff.staffId },
+          { 'staff.staffId': staff.staffId }
+        ]
+      });
+      
+      return {
+        ...staff.toObject(),
+        program: staff.department || '',
+        classesCount: classesCount
+      };
     }));
-    res.status(200).json(formattedStaff);
+    
+    res.status(200).json({
+      success: true,
+      staff: staffWithClasses
+    });
   } catch (err) {
-    res.status(500).json({ 
+    console.error('Error fetching staff with classes:', err);
+    res.status(500).json({
       success: false,
-      error: 'Failed to fetch staff: ' + err.message 
+      error: 'Failed to fetch staff with classes: ' + err.message
     });
   }
 });
 
-// Add these routes to your staffRoutes.js file
+/* =====================================================
+   ADD STAFF
+   POST /api/staff
+===================================================== */
+router.post('/', async (req, res) => {
+  try {
+    const { name, email, program, department, password } = req.body;
 
-// Get staff classes (for admin PDF generation)
-// staffRoutes.js - Update the /:staffId/classes route (around line 96)
+    if (!name || !email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Name and Email are required'
+      });
+    }
+
+    if (!program && !department) {
+      return res.status(400).json({
+        success: false,
+        error: 'Department / Program is required'
+      });
+    }
+
+    const lowerEmail = email.toLowerCase();
+    const exists = await Staff.findOne({ email: lowerEmail });
+    if (exists) {
+      return res.status(400).json({
+        success: false,
+        error: 'Staff already exists'
+      });
+    }
+
+    const staffId = `staff_${email.split('@')[0]}_${Date.now().toString().slice(-6)}`;
+    const staff = new Staff({
+      staffId,
+      name,
+      email: lowerEmail,
+      department: department || program,
+      tempPassword: password || `temp_${Date.now().toString().slice(-6)}`,
+      createdByAdmin: true
+    });
+
+    staff.passwordHistory = [{
+      password: password || staff.tempPassword,
+      createdAt: new Date(),
+      createdBy: 'admin'
+    }];
+
+    await staff.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'Staff added successfully',
+      data: staff
+    });
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        error: 'Staff email already exists in database'
+      });
+    }
+    res.status(500).json({
+      success: false,
+      error: 'Failed to add staff: ' + err.message
+    });
+  }
+});
+
+/* =====================================================
+   CHECK STAFF BY EMAIL
+   GET /api/staff/email/:email
+===================================================== */
+router.get('/email/:email', async (req, res) => {
+  try {
+    const staff = await Staff.findOne({
+      email: req.params.email.toLowerCase()
+    });
+
+    if (!staff) {
+      return res.status(200).json({ 
+        exists: false,
+        message: 'Staff member not found in the system'
+      });
+    }
+
+    res.status(200).json({
+      exists: true,
+      staffId: staff.staffId,
+      name: staff.name,
+      email: staff.email,
+      department: staff.department,
+      message: 'Staff member found'
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+/* =====================================================
+   STAFF CLASSES BY IDENTIFIER
+   GET /api/staff/:identifier/classes
+===================================================== */
+router.get('/:identifier/classes', async (req, res) => {
+  try {
+    const identifier = req.params.identifier;
+    let staff = null;
+
+    if (identifier.includes('@')) {
+      staff = await Staff.findOne({ email: identifier.toLowerCase() });
+    } else {
+      staff = await Staff.findOne({ staffId: identifier });
+    }
+
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        error: 'Staff not found'
+      });
+    }
+
+    const classes = await Class.find({
+      $or: [
+        { staffId: staff.staffId },
+        { 'staff.email': staff.email }
+      ]
+    }).sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      staff: {
+        staffId: staff.staffId,
+        name: staff.name,
+        email: staff.email,
+        department: staff.department
+      },
+      classes,
+      count: classes.length
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+/* =====================================================
+   STAFF CLASSES BY STAFF ID
+   GET /api/staff/:staffId/classes
+===================================================== */
 router.get('/:staffId/classes', async (req, res) => {
   try {
     const { staffId } = req.params;
-    const { email } = req.query; // Add email parameter
+    const { email } = req.query;
     
     if (!staffId) {
       return res.status(400).json({
@@ -240,17 +317,15 @@ router.get('/:staffId/classes', async (req, res) => {
       });
     }
 
-    // Try to find staff by multiple fields
     let staff = await Staff.findOne({
       $or: [
         { staffId: staffId },
         { email: staffId },
-        { email: email } // Check by email query parameter
+        { email: email }
       ]
     });
     
     if (!staff && email) {
-      // If still not found, try just by email
       staff = await Staff.findOne({ email: email.toLowerCase() });
     }
     
@@ -261,16 +336,12 @@ router.get('/:staffId/classes', async (req, res) => {
       });
     }
     
-    // Now we have the staff object, fetch their classes
     let classes = [];
-    
-    // First try: Check if staff has createdClasses populated
     if (staff.createdClasses && staff.createdClasses.length > 0) {
       classes = await Class.find({ _id: { $in: staff.createdClasses } })
         .sort({ createdAt: -1 });
     }
     
-    // If no classes found, fallback to querying Class collection
     if (classes.length === 0) {
       classes = await Class.find({
         $or: [
@@ -290,7 +361,6 @@ router.get('/:staffId/classes', async (req, res) => {
       classes: classes,
       count: classes.length
     });
-    
   } catch (err) {
     console.error('Error fetching staff classes:', err);
     res.status(500).json({
@@ -300,7 +370,10 @@ router.get('/:staffId/classes', async (req, res) => {
   }
 });
 
-// staffRoutes.js - Add new route for getting classes by email
+/* =====================================================
+   STAFF CLASSES BY EMAIL
+   GET /api/staff/email/:email/classes
+===================================================== */
 router.get('/email/:email/classes', async (req, res) => {
   try {
     const { email } = req.params;
@@ -312,7 +385,6 @@ router.get('/email/:email/classes', async (req, res) => {
       });
     }
 
-    // Find staff by email
     const staff = await Staff.findOne({ email: email.toLowerCase() });
     
     if (!staff) {
@@ -322,23 +394,19 @@ router.get('/email/:email/classes', async (req, res) => {
       });
     }
     
-    // Fetch classes
     let classes = [];
-    
-    // Try from createdClasses first
     if (staff.createdClasses && staff.createdClasses.length > 0) {
       classes = await Class.find({ _id: { $in: staff.createdClasses } })
         .sort({ createdAt: -1 });
     }
     
-    // Fallback query
     if (classes.length === 0) {
       classes = await Class.find({
         $or: [
           { staffId: staff.staffId },
           { 'staff.staffId': staff.staffId },
           { 'staff.email': staff.email },
-          { staffId: staff.email } // Some classes might use email as staffId
+          { staffId: staff.email }
         ]
       }).sort({ createdAt: -1 });
     }
@@ -352,7 +420,6 @@ router.get('/email/:email/classes', async (req, res) => {
       classes: classes,
       count: classes.length
     });
-    
   } catch (err) {
     console.error('Error fetching staff classes by email:', err);
     res.status(500).json({
@@ -362,43 +429,41 @@ router.get('/email/:email/classes', async (req, res) => {
   }
 });
 
-// Get all staff with their classes count
-router.get('/with-classes', async (req, res) => {
+/* =====================================================
+   DELETE STAFF
+   DELETE /api/staff/:email
+===================================================== */
+router.delete('/:email', async (req, res) => {
   try {
-    // Fetch all staff
-    const allStaff = await Staff.find();
-    
-    // Create an array with staff info and their classes count
-    const staffWithClasses = await Promise.all(allStaff.map(async (staff) => {
-      const classesCount = await Class.countDocuments({
-        $or: [
-          { staffId: staff.staffId },
-          { 'staff.staffId': staff.staffId }
-        ]
+    const email = req.params.email.toLowerCase();
+    await admin.auth().deleteUser(
+      (await admin.auth().getUserByEmail(email)).uid
+    );
+
+    const result = await Staff.deleteOne({ email });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Staff not found'
       });
-      
-      return {
-        ...staff.toObject(),
-        program: staff.department || '', // For compatibility
-        classesCount: classesCount
-      };
-    }));
-    
+    }
+
     res.status(200).json({
       success: true,
-      staff: staffWithClasses
+      message: 'Staff deleted successfully'
     });
-    
   } catch (err) {
-    console.error('Error fetching staff with classes:', err);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch staff with classes: ' + err.message
+      error: err.message
     });
   }
 });
 
-// Get all users from Firebase
+/* =====================================================
+   GET ALL USERS FROM FIREBASE
+   GET /api/staff/users
+===================================================== */
 router.get('/users', async (req, res) => {
   try {
     const listUsersResult = await admin.auth().listUsers();
@@ -416,7 +481,10 @@ router.get('/users', async (req, res) => {
   }
 });
 
-// Delete user (staff or student)
+/* =====================================================
+   DELETE USER (STAFF OR STUDENT)
+   DELETE /api/staff/users
+===================================================== */
 router.delete('/users', async (req, res) => {
   try {
     const { email, type } = req.body;
@@ -436,15 +504,12 @@ router.delete('/users', async (req, res) => {
       });
     }
 
-    // Get Firebase user by email
     const user = await admin.auth().getUserByEmail(email);
     console.log('Firebase user found:', user.uid);
 
-    // Delete from Firebase
     await admin.auth().deleteUser(user.uid);
     console.log('User deleted from Firebase:', user.uid);
 
-    // Delete from MongoDB based on type
     if (type === 'staff') {
       const result = await Staff.deleteOne({ email: email.toLowerCase() });
       console.log('Staff deletion result:', result);
@@ -486,7 +551,10 @@ router.delete('/users', async (req, res) => {
   }
 });
 
-// Update user (staff or student)
+/* =====================================================
+   UPDATE USER (STAFF OR STUDENT)
+   PUT /api/staff/users
+===================================================== */
 router.put('/users', async (req, res) => {
   try {
     const { oldEmail, newEmail, type, newPassword, name, program, department } = req.body;
@@ -521,7 +589,6 @@ router.put('/users', async (req, res) => {
       });
     }
 
-    // CHANGED: For staff, require department/program
     if (type === 'staff' && !program && !department) {
       return res.status(400).json({ 
         success: false,
@@ -529,7 +596,6 @@ router.put('/users', async (req, res) => {
       });
     }
 
-    // Get Firebase user by old email
     let user;
     try {
       user = await admin.auth().getUserByEmail(oldEmail);
@@ -539,12 +605,11 @@ router.put('/users', async (req, res) => {
         return res.status(404).json({ 
           success: false,
           error: 'User not found in Firebase' 
-      });
+        });
       }
       throw err;
     }
 
-    // Check if new email is already in use in Firebase
     if (oldEmail.toLowerCase() !== newEmail.toLowerCase()) {
       try {
         await admin.auth().getUserByEmail(newEmail);
@@ -557,7 +622,6 @@ router.put('/users', async (req, res) => {
       }
     }
 
-    // Update Firebase user
     const updateData = {};
     if (newEmail) updateData.email = newEmail;
     if (newPassword) updateData.password = newPassword;
@@ -566,7 +630,6 @@ router.put('/users', async (req, res) => {
       console.log('User updated in Firebase:', user.uid);
     }
 
-    // Update MongoDB based on type
     if (type === 'staff') {
       const updateFields = {};
       if (name) updateFields.name = name;
@@ -616,7 +679,10 @@ router.put('/users', async (req, res) => {
   }
 });
 
-// Bulk user creation (staff or student)
+/* =====================================================
+   BULK USER CREATION (STAFF OR STUDENT)
+   POST /api/staff/bulk-users
+===================================================== */
 router.post('/bulk-users', async (req, res) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   
@@ -642,7 +708,6 @@ router.post('/bulk-users', async (req, res) => {
     for (const user of users) {
       const { name, program, email, password, department } = user;
       
-      // Basic validation
       if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
         results.push({ email: email || 'unknown', success: false, error: 'Email and password are required' });
         continue;
@@ -653,7 +718,6 @@ router.post('/bulk-users', async (req, res) => {
         continue;
       }
       
-      // CHANGED: For staff, require department/program
       if (type === 'staff' && !program && !department) {
         results.push({ email, success: false, error: 'Department/Program is required for staff' });
         continue;
@@ -677,7 +741,6 @@ router.post('/bulk-users', async (req, res) => {
       let lowerEmail = email.toLowerCase();
 
       try {
-        // Check if exists first in Firebase
         try {
           const userRecord = await admin.auth().getUserByEmail(lowerEmail);
           results.push({ email: lowerEmail, success: false, error: 'Email already exists in Firebase' });
@@ -686,18 +749,16 @@ router.post('/bulk-users', async (req, res) => {
           if (err.code !== 'auth/user-not-found') throw err;
         }
 
-        // Create in Firebase
         await admin.auth().createUser({ 
           email: lowerEmail, 
           password,
           displayName: name
         });
 
-        // Add to MongoDB
         if (type === 'staff') {
           const staffData = {
             name: name,
-            department: department || program || '', // Use department or program
+            department: department || program || '',
             email: lowerEmail
           };
           await Staff.updateOne(
