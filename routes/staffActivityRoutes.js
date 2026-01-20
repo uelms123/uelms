@@ -80,6 +80,61 @@ router.post('/track-visit', async (req, res) => {
   }
 });
 
+// Track assignment activity
+router.post('/track-assignment', async (req, res) => {
+  try {
+    const { staffId, staffEmail, staffName, classId, activityType, itemData = {} } = req.body;
+
+    if (!staffId || !classId || !activityType) {
+      return res.status(400).json({ error: 'Staff ID, Class ID, and activityType are required' });
+    }
+
+    const classData = await Class.findById(classId);
+    if (!classData) {
+      return res.status(404).json({ error: 'Class not found' });
+    }
+
+    let activity = await StaffActivity.findOne({ staffId, classId });
+
+    if (!activity) {
+      activity = new StaffActivity({
+        staffId,
+        staffEmail: staffEmail || '',
+        staffName: staffName || '',
+        classId,
+        className: classData.name,
+        classSubject: classData.subject || '',
+        classSection: classData.section || '',
+        classCreatedDate: classData.createdAt,
+        totalAssignments: 1,
+        lastAssessmentUpdate: new Date(),
+      });
+    } else {
+      activity.totalAssignments = (activity.totalAssignments || 0) + 1;
+      activity.lastAssessmentUpdate = new Date();
+    }
+
+    // Add to assignments items log
+    activity.activities = activity.activities || {};
+    activity.activities.assignments = activity.activities.assignments || { items: [], count: 0, lastUpdated: new Date() };
+    activity.activities.assignments.items.push({
+      id: itemData.id || new mongoose.Types.ObjectId().toString(),
+      title: itemData.title || 'Untitled Assignment',
+      type: itemData.type || 'assignment',
+      assignmentType: itemData.assignmentType || 'text', // Add assignment type (mcq or text)
+      createdAt: new Date(),
+    });
+    activity.activities.assignments.count = activity.totalAssignments;
+    activity.activities.assignments.lastUpdated = new Date();
+
+    await activity.save();
+    res.json({ success: true, message: 'Assignment tracked successfully' });
+  } catch (err) {
+    console.error('Error tracking assignment:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Track assessment activity (increments totalAssessments for new units/files)
 router.post('/track-assessment', async (req, res) => {
   try {

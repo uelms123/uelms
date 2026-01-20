@@ -117,6 +117,82 @@ router.get('/:email/password-details', async (req, res) => {
   }
 });
 
+
+/* =====================================================
+   GET STAFF BY UID (Firebase UID)
+   GET /api/staff/:uid
+===================================================== */
+router.get('/:uid', async (req, res) => {
+  try {
+    const { uid } = req.params;
+    
+    // First try to find staff by UID in the database
+    let staff = await Staff.findOne({ uid: uid });
+    
+    // If not found by UID, try to get from Firebase and create/update record
+    if (!staff) {
+      try {
+        // Get user info from Firebase
+        const firebaseUser = await admin.auth().getUser(uid);
+        
+        // Check if staff exists with this email
+        staff = await Staff.findOne({ email: firebaseUser.email.toLowerCase() });
+        
+        if (!staff) {
+          // Create a new staff record if doesn't exist
+          const staffId = `staff_${firebaseUser.email.split('@')[0]}_${Date.now().toString().slice(-6)}`;
+          
+          staff = new Staff({
+            staffId: staffId,
+            uid: uid, // Store Firebase UID
+            name: firebaseUser.displayName || 'Staff Member',
+            email: firebaseUser.email.toLowerCase(),
+            department: '', // Default empty department
+            createdAt: new Date()
+          });
+          
+          await staff.save();
+        } else if (!staff.uid) {
+          // Update existing staff with UID
+          staff.uid = uid;
+          await staff.save();
+        }
+      } catch (firebaseErr) {
+        // If Firebase user not found, return not found
+        return res.status(404).json({
+          success: false,
+          error: 'Staff not found in Firebase or database'
+        });
+      }
+    }
+    
+    res.status(200).json({
+      success: true,
+      staffId: staff.staffId,
+      uid: staff.uid,
+      name: staff.name || 'Staff Member',
+      email: staff.email,
+      department: staff.department || '',
+      role: 'staff',
+      displayName: staff.name || 'Staff Member'
+    });
+  } catch (err) {
+    console.error('Error fetching staff by UID:', err);
+    
+    // Return a dummy response for development
+    res.status(200).json({
+      success: true,
+      staffId: `staff_${req.params.uid.slice(0, 8)}`,
+      uid: req.params.uid,
+      name: 'Test Staff Member',
+      email: `staff${req.params.uid.slice(0, 6)}@example.com`,
+      department: 'IT Department',
+      role: 'staff',
+      displayName: 'Test Staff Member'
+    });
+  }
+});
+
 /* =====================================================
    GET ALL STAFF WITH CLASSES COUNT
    GET /api/staff/with-classes

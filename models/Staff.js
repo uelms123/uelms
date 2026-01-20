@@ -6,6 +6,12 @@ const staffSchema = new mongoose.Schema({
     required: [false, 'Staff ID is required'],
     unique: true
   },
+  uid: {  // NEW: Firebase UID field
+    type: String,
+    unique: true,
+    sparse: true,  // Allows multiple null values
+    trim: true
+  },
   name: {
     type: String,
     required: [true, 'Staff name is required'],
@@ -27,6 +33,21 @@ const staffSchema = new mongoose.Schema({
     type: String,
     required: false
   },
+  passwordHistory: {  // Keep existing field
+    type: [{
+      password: String,
+      createdAt: {
+        type: Date,
+        default: Date.now
+      },
+      createdBy: String,
+      note: String
+    }],
+    default: []
+  },
+  lastPasswordUpdated: {  // Keep existing field
+    type: Date
+  },
   position: {
     type: String,
     default: 'Teacher',
@@ -34,7 +55,7 @@ const staffSchema = new mongoose.Schema({
   },
   department: {
     type: String,
-    required: [true, 'Department/Program is required'], // CHANGED: Made required
+    required: [true, 'Department/Program is required'],
     trim: true
   },
   phone: {
@@ -50,7 +71,6 @@ const staffSchema = new mongoose.Schema({
     type: String,
     default: () => new Date().toISOString()
   },
-  // ADD THIS FIELD for tracking staff classes
   createdClasses: {
     type: [{
       type: mongoose.Schema.Types.ObjectId,
@@ -71,19 +91,23 @@ const staffSchema = new mongoose.Schema({
 // Update the updatedAt field on save
 staffSchema.pre('save', function(next) {
   this.updatedAt = Date.now();
-    if (!this.staffId) {
+  
+  if (!this.staffId) {
     // Create staffId from email (remove @ and domain)
     const emailPrefix = this.email.split('@')[0];
     this.staffId = `staff_${emailPrefix}_${Date.now().toString().slice(-6)}`;
   }
-    this.updatedAt = Date.now();
+  
   if (!this.createdTimestamp) {
     this.createdTimestamp = new Date().toISOString();
   }
+  
   next();
 });
 
-// Create index for email for faster lookups
+// Create indexes for faster lookups
 staffSchema.index({ email: 1 });
+staffSchema.index({ uid: 1 });  // NEW: Index for UID
+staffSchema.index({ staffId: 1 });
 
 module.exports = mongoose.model('Staff', staffSchema);

@@ -900,7 +900,7 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
-  console.log(`CORS enabled for: http://localhost:3000`);
+  console.log(`CORS enabled for: https://uelms.com`);
   console.log(`Activity Dashboard endpoints:`);
   console.log(`  GET  /api/staff-activity/summary`);
   console.log(`  GET  /api/staff-activity/all`);

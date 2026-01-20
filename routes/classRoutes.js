@@ -1,4 +1,3 @@
-
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
@@ -18,7 +17,6 @@ function extractNameFromEmail(email) {
 }
 
 // Helper function to check staff access
-// classRoutes.js - Update the checkStaffAccess helper function (around line 20)
 const checkStaffAccess = (classData, staffId, userEmail) => {
   if (!classData) return false;
   
@@ -49,6 +47,41 @@ const checkStaffAccess = (classData, staffId, userEmail) => {
   
   return hasAccess;
 };
+
+// ============ NEW ROUTE: Get class by ID (without staff ID) ============
+// This is the route your frontend is calling
+router.get('/:id', async (req, res) => {
+  try {
+    const classId = req.params.id;
+    
+    if (!mongoose.Types.ObjectId.isValid(classId)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid class ID format' 
+      });
+    }
+
+    const classData = await Class.findById(classId);
+    if (!classData) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Class not found' 
+      });
+    }
+
+    res.json({ 
+      success: true,
+      class: classData 
+    });
+  } catch (error) {
+    console.error('Error fetching class by ID:', error.message, error.stack);
+    res.status(500).json({ 
+      success: false,
+      error: `Failed to fetch class: ${error.message}`
+    });
+  }
+});
+// ============ END NEW ROUTE ============
 
 // Create a new class
 router.post('/', async (req, res) => {

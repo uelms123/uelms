@@ -6,6 +6,7 @@ const fs = require('fs');
 
 router.get('/:classId', async (req, res) => {
   try {
+    // Find all assignments for this class
     const assignments = await Assignment.find({
       classId: req.params.classId
     }).sort({ createdAt: -1 });
@@ -21,7 +22,12 @@ router.get('/:classId', async (req, res) => {
       })
     );
 
-    res.json(assignmentsWithStudentCount);
+    // Filter to only show assignments (not meetings)
+    const filteredAssignments = assignmentsWithStudentCount.filter(item => 
+      item.type === 'assignment'
+    );
+
+    res.json(filteredAssignments);
   } catch (err) {
     console.error('Error fetching assignments:', err);
     res.status(500).json({
@@ -51,6 +57,9 @@ router.post('/', async (req, res) => {
   try {
     const { meetLink, type, staffId } = req.body;
 
+    // Ensure type is set to 'assignment' for regular assignments
+    const assignmentType = req.body.assignmentType ? 'assignment' : (type || 'assignment');
+    
     let validatedMeetLink = meetLink;
     if (type?.includes('meet')) {
       if (!meetLink) {
@@ -78,10 +87,10 @@ router.post('/', async (req, res) => {
     const assignment = new Assignment({
       classId: req.body.classId,
       staffId: staffId,
-      type: 'assignment',
+      type: assignmentType, // This should be 'assignment' for text/mcq assignments
       title: req.body.title,
       description: req.body.description,
-      assignmentType: req.body.assignmentType,
+      assignmentType: req.body.assignmentType, // This is 'question' or 'mcq'
       question: req.body.question || null,
       mcqQuestions: req.body.mcqQuestions || [],
       meetTime: req.body.meetTime,
