@@ -89,7 +89,7 @@ const staffActivitySchema = new mongoose.Schema({
         createdAt: Date,
         type: {
           type: String,
-     enum: ['quiz', 'exam', 'test', 'project', 'unit', 'unit_creation', 'material', 'other']
+          enum: ['quiz', 'exam', 'test', 'project', 'unit', 'unit_creation', 'material', 'other', 'file_upload'] // Added 'file_upload' here
         },
         maxScore: Number,
         description: String
@@ -146,6 +146,7 @@ const staffActivitySchema = new mongoose.Schema({
   }
 });
 
+// All the rest of your code remains exactly the same...
 // Update timestamp before saving
 staffActivitySchema.pre('save', function(next) {
   this.updatedAt = Date.now();
