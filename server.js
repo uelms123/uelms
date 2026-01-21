@@ -61,7 +61,7 @@ app.use(cors({
   credentials: true
 }));
 
-const uploadsDir = '/var/data/uploads';
+const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
@@ -144,19 +144,6 @@ app.get('/api/students-with-passwords', async (req, res) => {
     });
   }
 });
-
-const archiver = require('archiver');
-
-app.get('/api/download-all', (req, res) => {
-  const archive = archiver('zip', { zlib: { level: 9 } });
-
-  res.attachment('uploads-backup.zip');
-  archive.pipe(res);
-
-  archive.directory('/var/data/uploads', false);
-  archive.finalize();
-});
-
 
 app.get('/api/staff/:identifier/classes', async (req, res) => {
   try {
