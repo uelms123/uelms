@@ -55,13 +55,13 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '100mb' }));
 
 app.use(cors({
-  origin: 'https://uelms.com',
+  origin: 'http://localhost:3000',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   credentials: true
 }));
 
-const uploadsDir = path.join(__dirname, 'uploads');
+const uploadsDir = '/var/data/uploads';
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
@@ -144,6 +144,19 @@ app.get('/api/students-with-passwords', async (req, res) => {
     });
   }
 });
+
+const archiver = require('archiver');
+
+app.get('/api/download-all', (req, res) => {
+  const archive = archiver('zip', { zlib: { level: 9 } });
+
+  res.attachment('uploads-backup.zip');
+  archive.pipe(res);
+
+  archive.directory('/var/data/uploads', false);
+  archive.finalize();
+});
+
 
 app.get('/api/staff/:identifier/classes', async (req, res) => {
   try {
