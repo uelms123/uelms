@@ -530,6 +530,315 @@ app.post('/api/students-with-password', async (req, res) => {
   }
 });
 
+// Enhanced bulk upload endpoint with better error handling
+// Enhanced bulk upload endpoint - FIXED VERSION
+app.post('/api/bulk-users-enhanced', async (req, res) => {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  
+  try {
+    const type = req.query.type; 
+    const users = req.body.users;
+
+    console.log('Enhanced bulk upload:', { 
+      type, 
+      userCount: users?.length,
+      sampleUser: users?.[0]
+    });
+
+    if (!type || !['staff', 'student'].includes(type)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid or missing type (staff|student).' 
+      });
+    }
+    
+    if (!Array.isArray(users) || users.length === 0) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'No users provided' 
+      });
+    }
+
+    const results = [];
+    const createdFirebaseUsers = [];
+    
+    for (let i = 0; i < users.length; i++) {
+      const user = users[i];
+      
+      // Normalize field names
+      const normalizedUser = {
+        name: user.name || user.Name || '',
+        program: user.program || user.Program || user.department || user.Department || '',
+        email: user.email || user.Email || '',
+        password: user.password || user.Password || user.tempPassword || ''
+      };
+      
+      const { name, program, email, password } = normalizedUser;
+      
+      // Row tracking
+      const rowNumber = user.rowNumber || i + 1;
+      
+      // Validate email
+      if (!email || typeof email !== 'string') {
+        results.push({ 
+          row: rowNumber,
+          email: email || 'unknown',
+          name: name || 'unknown',
+          success: false, 
+          error: 'Email is required' 
+        });
+        continue;
+      }
+      
+      // Validate password
+      if (!password || typeof password !== 'string') {
+        results.push({ 
+          row: rowNumber,
+          email: email,
+          name: name || 'unknown',
+          success: false, 
+          error: 'Password is required' 
+        });
+        continue;
+      }
+      
+      // Validate name
+      if (!name || !name.trim()) {
+        results.push({ 
+          row: rowNumber,
+          email: email,
+          name: name || 'unknown',
+          success: false, 
+          error: 'Name is required' 
+        });
+        continue;
+      }
+      
+      // Validate program/department for staff
+      const cleanProgram = (program || '').trim();
+      if (type === 'staff' && !cleanProgram) {
+        results.push({ 
+          row: rowNumber,
+          email: email,
+          name: name,
+          success: false, 
+          error: 'Department/Program is required' 
+        });
+        continue;
+      }
+      
+      // Validate password length
+      if (password.length < 6) {
+        results.push({ 
+          row: rowNumber,
+          email: email,
+          name: name,
+          success: false, 
+          error: 'Password must be at least 6 characters' 
+        });
+        continue;
+      }
+      
+      // Validate email format
+      if (!emailRegex.test(email)) {
+        results.push({ 
+          row: rowNumber,
+          email: email,
+          name: name,
+          success: false, 
+          error: 'Invalid email format' 
+        });
+        continue;
+      }
+
+      let lowerEmail = email.toLowerCase();
+      let firebaseUser = null;
+      let action = 'skipped';
+
+      try {
+        // Check Firebase first
+        try {
+          firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
+          console.log(`User ${lowerEmail} exists in Firebase, will update`);
+          action = 'update_firebase';
+        } catch (err) {
+          if (err.code === 'auth/user-not-found') {
+            // Create new Firebase user
+            try {
+              firebaseUser = await admin.auth().createUser({ 
+                email: lowerEmail, 
+                password: password,
+                displayName: name.trim(),
+                emailVerified: false,
+                disabled: false
+              });
+              createdFirebaseUsers.push({ uid: firebaseUser.uid, email: lowerEmail });
+              action = 'create_firebase';
+            } catch (createErr) {
+              results.push({ 
+                row: rowNumber,
+                email: lowerEmail,
+                name: name,
+                success: false, 
+                error: 'Firebase creation failed: ' + createErr.message 
+              });
+              continue;
+            }
+          } else {
+            throw err;
+          }
+        }
+
+        // Handle database operations
+        if (type === 'staff') {
+          const existingStaff = await Staff.findOne({ email: lowerEmail });
+          
+          if (existingStaff) {
+            // UPDATE EXISTING STAFF (This was missing!)
+            existingStaff.name = name;
+            existingStaff.department = cleanProgram || 'General';
+            existingStaff.tempPassword = password;
+            
+            // Add to password history
+            if (!existingStaff.passwordHistory) {
+              existingStaff.passwordHistory = [];
+            }
+            existingStaff.passwordHistory.push({
+              password: password,
+              createdAt: new Date(),
+              createdBy: 'admin_bulk_update'
+            });
+            
+            await existingStaff.save();
+            action = 'updated';
+            
+            results.push({ 
+              row: rowNumber,
+              email: lowerEmail,
+              name: name,
+              success: true,
+              action: 'updated'
+            });
+          } else {
+            // CREATE NEW STAFF
+            const staffId = `staff_${Date.now().toString().slice(-6)}_${Math.random().toString(36).substr(2, 5)}`;
+            const staffData = {
+              staffId: staffId,
+              name: name.trim(),
+              department: cleanProgram || 'General',
+              email: lowerEmail,
+              tempPassword: password,
+              createdAt: new Date(),
+              createdByAdmin: true,
+              createdTimestamp: new Date().toISOString(),
+              passwordHistory: [{
+                password: password,
+                createdAt: new Date(),
+                createdBy: 'admin_bulk_create'
+              }]
+            };
+            
+            await Staff.create(staffData);
+            action = 'created';
+            
+            results.push({ 
+              row: rowNumber,
+              email: lowerEmail,
+              name: name,
+              success: true,
+              action: 'created'
+            });
+          }
+        } else {
+          // Student logic (similar pattern)
+          const existingStudent = await Student.findOne({ email: lowerEmail });
+          if (existingStudent) {
+            existingStudent.name = name;
+            existingStudent.program = program;
+            existingStudent.tempPassword = password;
+            await existingStudent.save();
+            action = 'updated';
+            
+            results.push({ 
+              row: rowNumber,
+              email: lowerEmail,
+              name: name,
+              success: true,
+              action: 'updated'
+            });
+          } else {
+            const studentId = `student_${Date.now().toString().slice(-6)}_${Math.random().toString(36).substr(2, 5)}`;
+            const studentData = {
+              studentId: studentId,
+              name: name.trim(),
+              program: program,
+              email: lowerEmail,
+              tempPassword: password,
+              createdAt: new Date(),
+              createdByAdmin: true,
+              createdTimestamp: new Date().toISOString()
+            };
+            await Student.create(studentData);
+            action = 'created';
+            
+            results.push({ 
+              row: rowNumber,
+              email: lowerEmail,
+              name: name,
+              success: true,
+              action: 'created'
+            });
+          }
+        }
+      } catch (err) {
+        console.error(`Error processing user ${lowerEmail}:`, err.message);
+        results.push({ 
+          row: rowNumber,
+          email: lowerEmail,
+          name: name,
+          success: false, 
+          error: err.message 
+        });
+        
+        // Cleanup Firebase user if created and failed
+        if (action === 'create_firebase' && firebaseUser) {
+          try {
+            await admin.auth().deleteUser(firebaseUser.uid);
+          } catch (cleanupErr) {
+            console.error('Error cleaning up Firebase user:', cleanupErr);
+          }
+        }
+      }
+    }
+
+    // Calculate statistics
+    const successCount = results.filter(r => r.success).length;
+    const createdCount = results.filter(r => r.success && r.action === 'created').length;
+    const updatedCount = results.filter(r => r.success && r.action === 'updated').length;
+    
+    console.log(`Enhanced bulk upload completed: ${successCount}/${users.length} successful`);
+    
+    res.status(200).json({ 
+      success: true,
+      message: `Bulk ${type} upload completed`,
+      stats: {
+        total: users.length,
+        successful: successCount,
+        failed: users.length - successCount,
+        created: createdCount,
+        updated: updatedCount
+      },
+      results 
+    });
+  } catch (err) {
+    console.error('Error in enhanced bulk upload:', err);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to process bulk upload: ' + err.message 
+    });
+  }
+});
+
 app.post('/api/bulk-users-with-passwords', async (req, res) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   
@@ -900,7 +1209,7 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
-  console.log(`CORS enabled for: https://uelms.com`);
+  console.log(`CORS enabled for: http://localhost:3000`);
   console.log(`Activity Dashboard endpoints:`);
   console.log(`  GET  /api/staff-activity/summary`);
   console.log(`  GET  /api/staff-activity/all`);
