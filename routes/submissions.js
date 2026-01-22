@@ -27,7 +27,6 @@ const upload = multer({
 
 const getBucket = () => admin.storage().bucket();
 
-// ============ HELPER FUNCTIONS ============
 const calculateMCQResults = async (assignment, mcqAnswers) => {
   if (!assignment || assignment.assignmentType !== 'mcq' || !assignment.mcqQuestions || !mcqAnswers) {
     return null;
@@ -63,9 +62,6 @@ const calculateMCQResults = async (assignment, mcqAnswers) => {
   };
 };
 
-// ============ ROUTES ============
-
-// Get submission status for a student in a class
 router.get('/status/:classId/student/:studentId', async (req, res) => {
   try {
     const { classId, studentId } = req.params;
@@ -87,7 +83,7 @@ router.get('/status/:classId/student/:studentId', async (req, res) => {
       }
     });
 
-    const assignments = await Assignment.find({ classId }).select('_id title assignmentType mcqQuestions');
+    const assignments = await Assignment.find({ classId }).select('_id title assignmentType mcqQuestions fileInstructions attachments');
 
     const status = {};
     assignments.forEach(assignment => {
@@ -106,7 +102,9 @@ router.get('/status/:classId/student/:studentId', async (req, res) => {
         mcqResults: sub?.mcqResults || [],
         mcqScore: sub?.mcqScore || 0,
         mcqTotalQuestions: sub?.mcqTotalQuestions || 0,
-        files: sub?.files || []
+        files: sub?.files || [],
+        fileInstructions: assignment.fileInstructions,
+        attachments: assignment.attachments || []
       };
     });
 
@@ -120,7 +118,6 @@ router.get('/status/:classId/student/:studentId', async (req, res) => {
   }
 });
 
-// Create a new submission with automatic MCQ grading
 router.post('/', upload.array('files', 10), async (req, res) => {
   try {
     const { assignmentId, classId, studentId, answer, studentName, mcqAnswers } = req.body;
@@ -158,7 +155,6 @@ router.post('/', upload.array('files', 10), async (req, res) => {
       });
     }
 
-    // Get assignment to check if it's MCQ and calculate results
     const assignment = await Assignment.findById(assignmentId);
     if (!assignment) {
       return res.status(404).json({ 
@@ -166,7 +162,6 @@ router.post('/', upload.array('files', 10), async (req, res) => {
       });
     }
 
-    // Calculate MCQ results if this is an MCQ assignment
     let mcqResults = null;
     let mcqScore = 0;
     let mcqTotalQuestions = 0;
@@ -194,7 +189,7 @@ router.post('/', upload.array('files', 10), async (req, res) => {
 
         const [url] = await fileRef.getSignedUrl({
           action: 'read',
-          expires: '03-01-2500'
+          expires: '03-01-2035'
         });
 
         uploadedFiles.push({
@@ -206,7 +201,6 @@ router.post('/', upload.array('files', 10), async (req, res) => {
       }
     }
 
-    // Prepare answer text
     let finalAnswer = '';
     if (hasText) {
       finalAnswer = answer.trim();
@@ -214,6 +208,8 @@ router.post('/', upload.array('files', 10), async (req, res) => {
       finalAnswer = `MCQ Submission: ${mcqScore}/${mcqTotalQuestions} correct`;
     } else if (hasMcq) {
       finalAnswer = JSON.stringify(parsedMcqAnswers);
+    } else if (hasFiles && assignment.assignmentType === 'file-upload') {
+      finalAnswer = `File Upload Submission: ${uploadedFiles.length} file(s) submitted`;
     }
 
     const submission = new Submission({
@@ -259,7 +255,6 @@ router.post('/', upload.array('files', 10), async (req, res) => {
   }
 });
 
-// Delete a submission
 router.delete('/:id', async (req, res) => {
   try {
     const submission = await Submission.findById(req.params.id);
@@ -272,7 +267,6 @@ router.delete('/:id', async (req, res) => {
 
     const bucket = getBucket();
 
-    // Delete all files from Firebase Storage
     for (const file of submission.files) {
       if (file.url) {
         try {
@@ -300,7 +294,6 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// Delete a specific file from a submission
 router.delete('/:submissionId/file/:fileId', async (req, res) => {
   try {
     const submission = await Submission.findById(req.params.submissionId);
@@ -322,7 +315,6 @@ router.delete('/:submissionId/file/:fileId', async (req, res) => {
     const file = submission.files[fileIndex];
     const bucket = getBucket();
 
-    // Delete file from Firebase Storage
     if (file.url) {
       try {
         const fileName = decodeURIComponent(file.url.split('/o/')[1].split('?')[0]);
@@ -332,11 +324,9 @@ router.delete('/:submissionId/file/:fileId', async (req, res) => {
       }
     }
 
-    // Remove file from submission
     submission.files.splice(fileIndex, 1);
     await submission.save();
 
-    // Check if submission is now empty
     const hasContent = submission.answer || submission.files.length > 0 || submission.mcqAnswers.length > 0;
     if (!hasContent) {
       await submission.deleteOne();
@@ -360,7 +350,6 @@ router.delete('/:submissionId/file/:fileId', async (req, res) => {
   }
 });
 
-// Grade a submission
 router.put('/:id/grade', async (req, res) => {
   try {
     const { marks, comments, gradedBy, maxMarks = 100 } = req.body;
@@ -405,14 +394,13 @@ router.put('/:id/grade', async (req, res) => {
   }
 });
 
-// Get graded submissions for a student
 router.get('/graded/:studentId', async (req, res) => {
   try {
     const submissions = await Submission.find({
       studentId: req.params.studentId,
       'grading.marks': { $ne: null }
     })
-      .populate('assignmentId', 'title assignmentType mcqQuestions')
+      .populate('assignmentId', 'title assignmentType mcqQuestions fileInstructions')
       .populate('classId', 'name section')
       .sort({ 'grading.gradedAt': -1 });
 
@@ -430,7 +418,6 @@ router.get('/graded/:studentId', async (req, res) => {
   }
 });
 
-// Get submissions for a specific assignment
 router.get('/:assignmentId/submissions', async (req, res) => {
   try {
     const { assignmentId } = req.params;
@@ -446,9 +433,8 @@ router.get('/:assignmentId/submissions', async (req, res) => {
       .populate('files', 'name url type size _id')
       .sort({ submissionDate: -1 });
 
-    // Get assignment details to include MCQ questions
     const assignment = await Assignment.findById(assignmentId)
-      .select('title assignmentType mcqQuestions');
+      .select('title assignmentType mcqQuestions fileInstructions attachments');
 
     res.json({
       success: true,
@@ -465,7 +451,6 @@ router.get('/:assignmentId/submissions', async (req, res) => {
   }
 });
 
-// Recalculate MCQ results for a submission
 router.post('/:submissionId/recalculate-mcq', async (req, res) => {
   try {
     const submission = await Submission.findById(req.params.submissionId);
@@ -484,7 +469,6 @@ router.post('/:submissionId/recalculate-mcq', async (req, res) => {
       });
     }
 
-    // Calculate MCQ results
     const calculatedResults = await calculateMCQResults(assignment, submission.mcqAnswers);
     if (!calculatedResults) {
       return res.status(400).json({ 
@@ -493,12 +477,10 @@ router.post('/:submissionId/recalculate-mcq', async (req, res) => {
       });
     }
 
-    // Update submission with new results
     submission.mcqResults = calculatedResults.results;
     submission.mcqScore = calculatedResults.score;
     submission.mcqTotalQuestions = calculatedResults.totalQuestions;
     
-    // Update answer field with score summary
     if (!submission.answer || submission.answer.trim() === '') {
       submission.answer = `MCQ Submission: ${calculatedResults.score}/${calculatedResults.totalQuestions} correct`;
     }

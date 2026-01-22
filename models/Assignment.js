@@ -10,6 +10,13 @@ const mcqQuestionSchema = new mongoose.Schema({
   options: [optionSchema]
 });
 
+const fileSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  type: { type: String, required: true },
+  size: { type: Number, required: true },
+  url: { type: String, required: true }
+}, { timestamps: false });
+
 const assignmentSchema = new mongoose.Schema({
   classId: {
     type: String,
@@ -34,7 +41,7 @@ const assignmentSchema = new mongoose.Schema({
   },
   assignmentType: {
     type: String,
-    enum: ['question', 'mcq', null],
+    enum: ['question', 'mcq', 'file-upload', null],
     default: null
   },
   question: {
@@ -50,6 +57,7 @@ const assignmentSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  attachments: [fileSchema],
   createdAt: {
     type: Date,
     default: Date.now

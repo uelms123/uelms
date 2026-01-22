@@ -4,7 +4,7 @@ const fileSchema = new mongoose.Schema({
   name: { type: String, required: true },
   type: { type: String, required: true },
   size: { type: Number, required: true },
-  url: { type: String, required: true } 
+  url: { type: String, required: true }
 }, { timestamps: false });
 
 const mcqResultSchema = new mongoose.Schema({
@@ -43,7 +43,6 @@ const submissionSchema = new mongoose.Schema({
   grading: { type: gradingSchema, default: () => ({}) }
 }, { timestamps: true });
 
-// Indexes
 submissionSchema.index({ classId: 1, studentId: 1 });
 submissionSchema.index({ assignmentId: 1, studentId: 1 });
 submissionSchema.index({ studentId: 1, 'grading.marks': 1 });
@@ -51,12 +50,9 @@ submissionSchema.index({ submissionDate: -1 });
 submissionSchema.index({ classId: 1, assignmentId: 1 });
 submissionSchema.index({ 'mcqScore': -1 });
 
-// Middleware to calculate MCQ results before saving
 submissionSchema.pre('save', async function(next) {
-  // Only calculate MCQ results if this is an MCQ submission and mcqAnswers is populated
   if (this.mcqAnswers && this.mcqAnswers.length > 0 && this.isModified('mcqAnswers')) {
     try {
-      // Get the assignment to access the correct answers
       const Assignment = mongoose.model('Assignment');
       const assignment = await Assignment.findById(this.assignmentId);
       
@@ -65,7 +61,6 @@ submissionSchema.pre('save', async function(next) {
         this.mcqScore = 0;
         this.mcqTotalQuestions = assignment.mcqQuestions.length;
         
-        // Calculate results for each question
         assignment.mcqQuestions.forEach((question, qIndex) => {
           const studentAnswer = this.mcqAnswers[qIndex];
           const correctIndex = question.options.findIndex(opt => opt.isCorrect);
@@ -75,7 +70,6 @@ submissionSchema.pre('save', async function(next) {
             this.mcqScore++;
           }
           
-          // Create result object
           const result = {
             question: question.question,
             studentAnswer: studentAnswer,
@@ -91,20 +85,17 @@ submissionSchema.pre('save', async function(next) {
           this.mcqResults.push(result);
         });
         
-        // If answer field is empty, populate it with the MCQ results summary
         if (!this.answer || this.answer.trim() === '') {
           this.answer = `MCQ Submission: ${this.mcqScore}/${this.mcqTotalQuestions} correct`;
         }
       }
     } catch (error) {
       console.error('Error calculating MCQ results:', error);
-      // Continue saving even if MCQ calculation fails
     }
   }
   next();
 });
 
-// Static method to calculate MCQ results
 submissionSchema.statics.calculateMCQResults = async function(submissionId) {
   try {
     const submission = await this.findById(submissionId);
@@ -140,7 +131,6 @@ submissionSchema.statics.calculateMCQResults = async function(submissionId) {
       });
     });
     
-    // Update submission if needed
     if (submission.mcqScore !== score || JSON.stringify(submission.mcqResults) !== JSON.stringify(results)) {
       submission.mcqScore = score;
       submission.mcqTotalQuestions = assignment.mcqQuestions.length;
@@ -159,7 +149,6 @@ submissionSchema.statics.calculateMCQResults = async function(submissionId) {
   }
 };
 
-// Instance method to get formatted MCQ results
 submissionSchema.methods.getFormattedMCQResults = function() {
   if (!this.mcqResults || this.mcqResults.length === 0) {
     return null;
@@ -187,7 +176,6 @@ submissionSchema.methods.getFormattedMCQResults = function() {
   };
 };
 
-// Instance method to check if submission is for MCQ
 submissionSchema.methods.isMCQSubmission = function() {
   return this.mcqAnswers && this.mcqAnswers.length > 0;
 };

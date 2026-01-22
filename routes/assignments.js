@@ -2,11 +2,33 @@ const express = require('express');
 const router = express.Router();
 const Assignment = require('../models/Assignment');
 const Submission = require('../models/Submission');
+const multer = require('multer');
+const admin = require('firebase-admin');
 const fs = require('fs');
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'text/plain'
+    ];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type'), false);
+    }
+  }
+});
+
+const getBucket = () => admin.storage().bucket();
 
 router.get('/:classId', async (req, res) => {
   try {
-    // Find all assignments for this class
     const assignments = await Assignment.find({
       classId: req.params.classId
     }).sort({ createdAt: -1 });
@@ -22,7 +44,6 @@ router.get('/:classId', async (req, res) => {
       })
     );
 
-    // Filter to only show assignments (not meetings)
     const filteredAssignments = assignmentsWithStudentCount.filter(item => 
       item.type === 'assignment'
     );
@@ -53,13 +74,10 @@ router.get('/:classId/student/:studentId', async (req, res) => {
   }
 });
 
-router.post('/', async (req, res) => {
+router.post('/', upload.array('attachments', 5), async (req, res) => {
   try {
-    const { meetLink, type, staffId } = req.body;
+    const { meetLink, type, staffId, title, description, assignmentType, question, mcqQuestions, meetTime } = req.body;
 
-    // Ensure type is set to 'assignment' for regular assignments
-    const assignmentType = req.body.assignmentType ? 'assignment' : (type || 'assignment');
-    
     let validatedMeetLink = meetLink;
     if (type?.includes('meet')) {
       if (!meetLink) {
@@ -84,17 +102,43 @@ router.post('/', async (req, res) => {
       }
     }
 
+    const uploadedAttachments = [];
+    if (req.files && req.files.length > 0) {
+      const bucket = getBucket();
+      for (const file of req.files) {
+        const fileName = `assignments/${req.body.classId}/${Date.now()}-${Math.round(Math.random() * 1E9)}-${file.originalname}`;
+        const fileRef = bucket.file(fileName);
+
+        await fileRef.save(file.buffer, {
+          metadata: { contentType: file.mimetype }
+        });
+
+        const [url] = await fileRef.getSignedUrl({
+          action: 'read',
+          expires: '03-01-2500'
+        });
+
+        uploadedAttachments.push({
+          name: file.originalname,
+          type: file.mimetype,
+          size: file.size,
+          url
+        });
+      }
+    }
+
     const assignment = new Assignment({
       classId: req.body.classId,
       staffId: staffId,
-      type: assignmentType, // This should be 'assignment' for text/mcq assignments
-      title: req.body.title,
-      description: req.body.description,
-      assignmentType: req.body.assignmentType, // This is 'question' or 'mcq'
-      question: req.body.question || null,
-      mcqQuestions: req.body.mcqQuestions || [],
-      meetTime: req.body.meetTime,
+      type: assignmentType ? 'assignment' : (type || 'assignment'),
+      title: title,
+      description: description || '',
+      assignmentType: assignmentType,
+      question: assignmentType === 'question' ? question : null,
+      mcqQuestions: assignmentType === 'mcq' ? (mcqQuestions ? JSON.parse(mcqQuestions) : []) : [],
+      meetTime: meetTime,
       meetLink: validatedMeetLink,
+      attachments: uploadedAttachments
     });
 
     const newAssignment = await assignment.save();
@@ -108,7 +152,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', upload.array('attachments', 5), async (req, res) => {
   try {
     const assignment = await Assignment.findOne({
       _id: req.params.id
@@ -146,11 +190,35 @@ router.put('/:id', async (req, res) => {
     assignment.title = title || assignment.title;
     assignment.description = description || assignment.description;
     assignment.assignmentType = assignmentType || assignment.assignmentType;
-    assignment.question = question !== undefined ? question : assignment.question;
-    assignment.mcqQuestions = mcqQuestions || assignment.mcqQuestions;
+    assignment.question = assignmentType === 'question' ? (question !== undefined ? question : assignment.question) : null;
+    assignment.mcqQuestions = assignmentType === 'mcq' ? (mcqQuestions ? JSON.parse(mcqQuestions) : assignment.mcqQuestions) : [];
     assignment.meetTime = meetTime || assignment.meetTime;
     assignment.meetLink = validatedMeetLink;
     assignment.updatedAt = Date.now();
+
+    if (req.files && req.files.length > 0) {
+      const bucket = getBucket();
+      for (const file of req.files) {
+        const fileName = `assignments/${assignment.classId}/${Date.now()}-${Math.round(Math.random() * 1E9)}-${file.originalname}`;
+        const fileRef = bucket.file(fileName);
+
+        await fileRef.save(file.buffer, {
+          metadata: { contentType: file.mimetype }
+        });
+
+        const [url] = await fileRef.getSignedUrl({
+          action: 'read',
+          expires: '03-01-2500'
+        });
+
+        assignment.attachments.push({
+          name: file.originalname,
+          type: file.mimetype,
+          size: file.size,
+          url
+        });
+      }
+    }
 
     const updatedAssignment = await assignment.save();
     res.json(updatedAssignment);
@@ -173,15 +241,29 @@ router.delete('/:id', async (req, res) => {
     }
 
     const submissions = await Submission.find({ assignmentId: req.params.id });
+    const bucket = getBucket();
+
     for (const submission of submissions) {
       for (const file of submission.files) {
         try {
-          if (file.path && fs.existsSync(file.path)) {
-            fs.unlinkSync(file.path);
+          if (file.url) {
+            const fileName = decodeURIComponent(file.url.split('/o/')[1].split('?')[0]);
+            await bucket.file(fileName).delete();
           }
         } catch (fileErr) {
-          console.error(`Failed to delete file ${file.path}:`, fileErr.message);
+          console.error(`Failed to delete submission file:`, fileErr);
         }
+      }
+    }
+
+    for (const attachment of assignment.attachments || []) {
+      try {
+        if (attachment.url) {
+          const fileName = decodeURIComponent(attachment.url.split('/o/')[1].split('?')[0]);
+          await bucket.file(fileName).delete();
+        }
+      } catch (fileErr) {
+        console.error(`Failed to delete attachment:`, fileErr);
       }
     }
 
