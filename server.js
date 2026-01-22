@@ -55,11 +55,16 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '100mb' }));
 
 app.use(cors({
-  origin: 'https://uelms.com',
+  origin: [
+    'https://uelms.com',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000'
+  ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   credentials: true
 }));
+
 
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
