@@ -20,7 +20,7 @@ const validateObjectId = (req, res, next) => {
 };
 
 router.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', 'http://localhost:3000');
+  res.header('Access-Control-Allow-Origin', 'https://uelms.com');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
   if (req.method === 'OPTIONS') {
@@ -800,5 +800,6 @@ router.get('/:id', validateObjectId, async (req, res) => {
     });
   }
 });
+
 
 module.exports = router;
