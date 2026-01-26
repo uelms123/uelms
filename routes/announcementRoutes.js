@@ -1,12 +1,43 @@
+
 const express = require('express');
 const router = express.Router();
 const Announcement = require('../models/Announcement');
 const Class = require('../models/Class');
+const multer = require('multer');
 
-// Create a new announcement (unchanged)
-router.post('/', async (req, res) => {
+// Configure multer for memory storage (for file validation only)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'image/png',
+      'image/jpeg',
+      'image/jpg',
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    ];
+    
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only PDF, DOCX, XLSX, PNG, JPG, PPTX are allowed.'));
+    }
+  }
+});
+
+// Create a new announcement (without file upload - file will be handled by frontend)
+router.post('/', upload.single('file'), async (req, res) => {
     try {
-        const { title, text, link, postedBy, classId, avatar, avatarBg } = req.body;
+        const { title, text, link, postedBy, classId, avatar, avatarBg, fileData } = req.body;
+        const uploadedFile = req.file;
 
         if (!title || !text || !classId) {
             return res.status(400).json({ 
@@ -15,14 +46,26 @@ router.post('/', async (req, res) => {
             });
         }
 
+        let fileInfo = null;
+        
+        // Parse fileData if provided (from frontend)
+        if (fileData) {
+            try {
+                fileInfo = JSON.parse(fileData);
+            } catch (e) {
+                console.error('Error parsing file data:', e);
+            }
+        }
+
         const newAnnouncement = new Announcement({
             title,
             text,
-            link,
+            link: link || '',
             postedBy: postedBy || 'Admin',
             classId,
             avatar: avatar || 'Y',
-            avatarBg: avatarBg || '#1a73e8'
+            avatarBg: avatarBg || '#1a73e8',
+            file: fileInfo
         });
 
         await newAnnouncement.save();
@@ -40,10 +83,10 @@ router.post('/', async (req, res) => {
     }
 });
 
-// Get all announcements with class name (updated)
+// Get all announcements with class name
 router.get('/', async (req, res) => {
     try {
-        const { role, postedBy, classIds } = req.query; // Include classIds
+        const { role, postedBy, classIds } = req.query;
 
         let query = {};
 
@@ -88,6 +131,7 @@ router.get('/', async (req, res) => {
             className: a.classId ? a.classId.name : 'No Class',
             avatar: a.avatar,
             avatarBg: a.avatarBg,
+            file: a.file,
             createdAt: a.createdAt
         }));
 
@@ -105,7 +149,7 @@ router.get('/', async (req, res) => {
     }
 });
 
-// Get all announcements for a specific class (unchanged)
+// Get all announcements for a specific class
 router.get('/class/:classId', async (req, res) => {
     try {
         const { classId } = req.params;
@@ -126,6 +170,7 @@ router.get('/class/:classId', async (req, res) => {
             className: a.classId ? a.classId.name : 'No Class',
             avatar: a.avatar,
             avatarBg: a.avatarBg,
+            file: a.file,
             createdAt: a.createdAt
         }));
 
@@ -143,7 +188,7 @@ router.get('/class/:classId', async (req, res) => {
     }
 });
 
-// Delete an announcement (unchanged)
+// Delete an announcement
 router.delete('/:id', async (req, res) => {
     try {
         const { id } = req.params;
