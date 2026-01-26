@@ -19,15 +19,41 @@ const validateObjectId = (req, res, next) => {
   next();
 };
 
+const allowedOrigins = [
+  'https://uelms.com',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000'
+];
+
 router.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', 'https://uelms.com');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  const origin = req.headers.origin;
+
+  if (
+    allowedOrigins.includes(origin) ||
+    (origin && origin.startsWith('http://localhost'))
+  ) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
+
+  res.header(
+    'Access-Control-Allow-Methods',
+    'GET, POST, PUT, DELETE, OPTIONS'
+  );
+
+  res.header(
+    'Access-Control-Allow-Headers',
+    'Origin, X-Requested-With, Content-Type, Accept, Authorization'
+  );
+
+  res.header('Access-Control-Allow-Credentials', 'true');
+
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
+
   next();
 });
+
 
 router.post('/track-visit', async (req, res) => {
   try {
