@@ -1,3 +1,4 @@
+
 const mongoose = require('mongoose');
 
 const announcementSchema = new mongoose.Schema({
@@ -8,6 +9,14 @@ const announcementSchema = new mongoose.Schema({
     link: { type: String },
     postedBy: { type: String, required: true },
     classId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class', required: true },
+    file: {
+        url: String,
+        fileName: String,
+        originalName: String,
+        fileType: String,
+        size: Number,
+        downloadUrl: String
+    },
     createdAt: { type: Date, default: Date.now }
 });
 
