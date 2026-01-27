@@ -117,6 +117,7 @@ router.get('/:email/password-details', async (req, res) => {
   }
 });
 
+
 /* =====================================================
    GET STAFF BY UID (Firebase UID)
    GET /api/staff/:uid
@@ -199,7 +200,7 @@ router.get('/:uid', async (req, res) => {
 router.get('/with-classes', async (req, res) => {
   try {
     const allStaff = await Staff.find();
-    const staffWithClasses = await Promise.allStaff.map(async (staff) => {
+    const staffWithClasses = await Promise.all(allStaff.map(async (staff) => {
       const classesCount = await Class.countDocuments({
         $or: [
           { staffId: staff.staffId },
@@ -212,7 +213,7 @@ router.get('/with-classes', async (req, res) => {
         program: staff.department || '',
         classesCount: classesCount
       };
-    });
+    }));
     
     res.status(200).json({
       success: true,
@@ -505,147 +506,32 @@ router.get('/email/:email/classes', async (req, res) => {
 });
 
 /* =====================================================
-   DELETE STAFF (Fixed to delete from both Firebase and MongoDB)
+   DELETE STAFF
    DELETE /api/staff/:email
 ===================================================== */
 router.delete('/:email', async (req, res) => {
   try {
     const email = req.params.email.toLowerCase();
-    
-    // Check if staff exists in MongoDB
-    const staff = await Staff.findOne({ email: email });
-    if (!staff) {
-      return res.status(404).json({
-        success: false,
-        error: 'Staff not found in database'
-      });
-    }
-    
-    // Try to delete from Firebase
-    try {
-      const user = await admin.auth().getUserByEmail(email);
-      await admin.auth().deleteUser(user.uid);
-      console.log('Staff deleted from Firebase:', user.uid);
-    } catch (firebaseErr) {
-      if (firebaseErr.code !== 'auth/user-not-found') {
-        console.warn('Firebase delete warning:', firebaseErr.message);
-        // Continue with MongoDB deletion even if Firebase fails
-      }
-    }
-    
-    // Delete from MongoDB
-    const result = await Staff.deleteOne({ email: email });
-    if (result.deletedCount === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Staff not found in database'
-      });
-    }
-    
-    console.log('Staff deleted from MongoDB:', email);
-    
-    res.status(200).json({
-      success: true,
-      message: 'Staff deleted successfully from both systems'
-    });
-  } catch (err) {
-    console.error('Error deleting staff:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to delete staff: ' + err.message
-    });
-  }
-});
+    await admin.auth().deleteUser(
+      (await admin.auth().getUserByEmail(email)).uid
+    );
 
-/* =====================================================
-   UPDATE STAFF (NEW ENDPOINT - Email cannot be changed)
-   PUT /api/staff/:email
-===================================================== */
-router.put('/:email', async (req, res) => {
-  try {
-    const email = req.params.email.toLowerCase();
-    const { name, program, department, password, tempPassword } = req.body;
-    
-    console.log('Update staff request received:', { email, name, program, department });
-    
-    // Find staff in MongoDB
-    const staff = await Staff.findOne({ email: email });
-    if (!staff) {
+    const result = await Staff.deleteOne({ email });
+    if (result.deletedCount === 0) {
       return res.status(404).json({
         success: false,
         error: 'Staff not found'
       });
     }
-    
-    // Prepare update data for MongoDB
-    const updateData = {};
-    if (name) updateData.name = name;
-    if (program || department) {
-      updateData.department = department || program;
-    }
-    
-    // Update password if provided
-    if (password) {
-      if (password.length < 6) {
-        return res.status(400).json({
-          success: false,
-          error: 'Password must be at least 6 characters'
-        });
-      }
-      
-      updateData.tempPassword = password;
-      updateData.lastPasswordUpdated = new Date();
-      
-      // Add to password history
-      const passwordRecord = {
-        password: password,
-        createdAt: new Date(),
-        createdBy: 'admin'
-      };
-      
-      if (!staff.passwordHistory) {
-        staff.passwordHistory = [];
-      }
-      staff.passwordHistory.push(passwordRecord);
-      updateData.passwordHistory = staff.passwordHistory;
-    }
-    
-    // Update MongoDB
-    if (Object.keys(updateData).length > 0) {
-      await Staff.updateOne(
-        { email: email },
-        { $set: updateData }
-      );
-      console.log('Staff updated in MongoDB:', email);
-    }
-    
-    // Update Firebase if password was changed
-    if (password) {
-      try {
-        // Get Firebase user
-        const user = await admin.auth().getUserByEmail(email);
-        
-        // Update password in Firebase
-        await admin.auth().updateUser(user.uid, {
-          password: password
-        });
-        console.log('Staff password updated in Firebase:', email);
-      } catch (firebaseErr) {
-        console.warn('Failed to update Firebase password:', firebaseErr.message);
-        // Continue even if Firebase update fails
-      }
-    }
-    
+
     res.status(200).json({
       success: true,
-      message: 'Staff updated successfully',
-      updatedFields: Object.keys(updateData)
+      message: 'Staff deleted successfully'
     });
   } catch (err) {
-    console.error('Error updating staff:', err);
     res.status(500).json({
       success: false,
-      error: 'Failed to update staff: ' + err.message
+      error: err.message
     });
   }
 });
@@ -672,7 +558,7 @@ router.get('/users', async (req, res) => {
 });
 
 /* =====================================================
-   DELETE USER (STAFF OR STUDENT) - DEPRECATED - Use specific endpoints instead
+   DELETE USER (STAFF OR STUDENT)
    DELETE /api/staff/users
 ===================================================== */
 router.delete('/users', async (req, res) => {
@@ -694,18 +580,12 @@ router.delete('/users', async (req, res) => {
       });
     }
 
-    // Try to delete from Firebase
-    try {
-      const user = await admin.auth().getUserByEmail(email.toLowerCase());
-      await admin.auth().deleteUser(user.uid);
-      console.log('User deleted from Firebase:', user.uid);
-    } catch (firebaseErr) {
-      if (firebaseErr.code !== 'auth/user-not-found') {
-        console.warn('Firebase delete warning:', firebaseErr.message);
-      }
-    }
+    const user = await admin.auth().getUserByEmail(email);
+    console.log('Firebase user found:', user.uid);
 
-    // Delete from MongoDB
+    await admin.auth().deleteUser(user.uid);
+    console.log('User deleted from Firebase:', user.uid);
+
     if (type === 'staff') {
       const result = await Staff.deleteOne({ email: email.toLowerCase() });
       console.log('Staff deletion result:', result);
@@ -733,15 +613,22 @@ router.delete('/users', async (req, res) => {
     });
   } catch (err) {
     console.error('Error occurred:', err);
-    res.status(500).json({ 
-      success: false,
-      error: 'Failed to delete user: ' + err.message 
-    });
+    if (err.code === 'auth/user-not-found') {
+      res.status(404).json({ 
+        success: false,
+        error: 'User not found in Firebase' 
+      });
+    } else {
+      res.status(500).json({ 
+        success: false,
+        error: 'Failed to delete user: ' + err.message 
+      });
+    }
   }
 });
 
 /* =====================================================
-   UPDATE USER (STAFF OR STUDENT) - DEPRECATED - Use specific endpoints instead
+   UPDATE USER (STAFF OR STUDENT)
    PUT /api/staff/users
 ===================================================== */
 router.put('/users', async (req, res) => {
@@ -749,10 +636,10 @@ router.put('/users', async (req, res) => {
     const { oldEmail, newEmail, type, newPassword, name, program, department } = req.body;
     console.log('Update request received:', { oldEmail, newEmail, type, name, program, department });
 
-    if (!oldEmail || !type) {
+    if (!oldEmail || !newEmail || !type) {
       return res.status(400).json({ 
         success: false,
-        error: 'oldEmail and type (staff/student) are required' 
+        error: 'oldEmail, newEmail, and type (staff/student) are required' 
       });
     }
 
@@ -763,15 +650,12 @@ router.put('/users', async (req, res) => {
       });
     }
 
-    // Email validation for newEmail (if provided)
-    if (newEmail) {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(newEmail)) {
-        return res.status(400).json({ 
-          success: false,
-          error: 'Invalid new email format' 
-        });
-      }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(newEmail)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid new email format' 
+      });
     }
 
     if (newPassword && newPassword.length < 6) {
@@ -802,8 +686,7 @@ router.put('/users', async (req, res) => {
       throw err;
     }
 
-    // Email change logic (if newEmail is provided and different)
-    if (newEmail && oldEmail.toLowerCase() !== newEmail.toLowerCase()) {
+    if (oldEmail.toLowerCase() !== newEmail.toLowerCase()) {
       try {
         await admin.auth().getUserByEmail(newEmail);
         return res.status(400).json({ 
@@ -815,57 +698,47 @@ router.put('/users', async (req, res) => {
       }
     }
 
-    // Update Firebase
-    const firebaseUpdateData = {};
-    if (newEmail && oldEmail.toLowerCase() !== newEmail.toLowerCase()) {
-      firebaseUpdateData.email = newEmail;
-    }
-    if (newPassword) {
-      firebaseUpdateData.password = newPassword;
-    }
-    if (Object.keys(firebaseUpdateData).length > 0) {
-      await admin.auth().updateUser(user.uid, firebaseUpdateData);
+    const updateData = {};
+    if (newEmail) updateData.email = newEmail;
+    if (newPassword) updateData.password = newPassword;
+    if (Object.keys(updateData).length > 0) {
+      await admin.auth().updateUser(user.uid, updateData);
       console.log('User updated in Firebase:', user.uid);
     }
 
-    // Update MongoDB
     if (type === 'staff') {
       const updateFields = {};
       if (name) updateFields.name = name;
-      if (program !== undefined || department !== undefined) {
-        updateFields.department = department || program;
-      }
-      if (newEmail && oldEmail.toLowerCase() !== newEmail.toLowerCase()) {
+      if (program !== undefined) updateFields.department = program || department;
+      if (oldEmail.toLowerCase() !== newEmail.toLowerCase()) {
         updateFields.email = newEmail.toLowerCase();
       }
       
       if (Object.keys(updateFields).length > 0) {
         await Staff.updateOne(
           { email: oldEmail.toLowerCase() },
-          { $set: updateFields }
+          updateFields
         );
-        console.log('Staff updated in MongoDB:', oldEmail);
       }
     } else if (type === 'student') {
       const updateFields = {};
       if (name) updateFields.name = name;
       if (program) updateFields.program = program;
-      if (newEmail && oldEmail.toLowerCase() !== newEmail.toLowerCase()) {
+      if (oldEmail.toLowerCase() !== newEmail.toLowerCase()) {
         updateFields.email = newEmail.toLowerCase();
       }
       
       if (Object.keys(updateFields).length > 0) {
         await Student.updateOne(
           { email: oldEmail.toLowerCase() },
-          { $set: updateFields }
+          updateFields
         );
-        console.log('Student updated in MongoDB:', oldEmail);
       }
     }
 
     res.status(200).json({ 
       success: true,
-      message: `User ${newEmail || oldEmail} updated successfully` 
+      message: `User ${newEmail} updated successfully` 
     });
   } catch (err) {
     console.error('Error updating user:', err);
