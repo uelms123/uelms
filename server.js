@@ -23,10 +23,12 @@ const staffMeetingsRoutes = require('./routes/staffMeetings');
 
 require('./models/files');
 require('./models/unit');
+require('./models/DailyUpload');
 const Staff = require('./models/Staff');
 const Student = require('./models/Students');
 const Class = require('./models/Class');
 const StaffActivity = require('./models/StaffActivity');
+
 
 const firebaseConfig = {
   projectId: process.env.FIREBASE_PROJECT_ID,
