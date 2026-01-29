@@ -11,7 +11,6 @@ const StaffActivity = require('../models/StaffActivity');
 const Class = require('../models/Class');
 const Staff = require('../models/Staff');
 
-// Utility function to format file size
 const formatFileSize = (bytes) => {
   if (bytes === 0) return '0 Bytes';
   const k = 1024;
@@ -20,43 +19,24 @@ const formatFileSize = (bytes) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
-// Multer configuration (memory storage - files will be uploaded to Firebase)
 const storage = multer.memoryStorage();
 
 const upload = multer({
   storage: storage,
   limits: { 
-    fileSize: 500 * 1024 * 1024, // INCREASED TO 500MB limit
-    fieldSize: 500 * 1024 * 1024  // Add field size limit
+    fileSize: 500 * 1024 * 1024,
+    fieldSize: 500 * 1024 * 1024
   },
   fileFilter: (req, file, cb) => {
     const allowedTypes = [
-      'image/jpeg',
-      'image/png',
-      'image/gif',
-      'image/webp',
-      'video/mp4',
-      'video/mpeg',
-      'video/webm',
-      'video/ogg',
-      'video/quicktime', // Add .mov support
-      'video/x-msvideo', // Add .avi support
-      'audio/mpeg',
-      'audio/wav',
-      'audio/ogg',
+      'image/jpeg','image/png','image/gif','image/webp',
+      'video/mp4','video/mpeg','video/webm','video/ogg','video/quicktime','video/x-msvideo',
+      'audio/mpeg','audio/wav','audio/ogg',
       'application/pdf',
-      'application/vnd.ms-powerpoint',
-      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'application/vnd.ms-excel',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'application/msword',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'text/plain',
-      'application/json',
-      'text/html',
-      'text/css',
-      'application/javascript',
-      'text/markdown',
+      'application/vnd.ms-powerpoint','application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.ms-excel','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/msword','application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'text/plain','application/json','text/html','text/css','application/javascript','text/markdown',
       'application/zip',
     ];
     if (allowedTypes.includes(file.mimetype)) {
@@ -67,7 +47,6 @@ const upload = multer({
   },
 });
 
-// Get all units for a class
 router.get('/:classId', async (req, res) => {
   try {
     const units = await Unit.find({ classId: req.params.classId }).populate('files');
@@ -77,7 +56,6 @@ router.get('/:classId', async (req, res) => {
   }
 });
 
-// Create new unit
 router.post('/', async (req, res) => {
   try {
     const { unitTitle, unitDescription, classId, staffId, staffEmail, staffName } = req.body;
@@ -143,8 +121,92 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Add file to unit - Upload to Firebase Storage
-// IMPROVED ERROR HANDLING AND CHUNKED UPLOAD SUPPORT
+router.post('/generate-signed-upload-url', async (req, res) => {
+  try {
+    const { unitId, fileName, fileType, fileSize } = req.body;
+
+    if (!unitId || !fileName || !fileType) {
+      return res.status(400).json({ error: 'unitId, fileName, and fileType are required' });
+    }
+
+    const bucket = getStorage().bucket();
+    
+    const safeFileName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const extension = path.extname(safeFileName) || '.bin';
+    const firebasePath = `units/${unitId}/files/${Date.now()}-${Math.random().toString(36).slice(2, 10)}${extension}`;
+
+    const fileRef = bucket.file(firebasePath);
+
+    const [signedUrl] = await fileRef.getSignedUrl({
+      version: 'v4',
+      action: 'write',
+      expires: Date.now() + 60 * 60 * 1000,
+      contentType: fileType,
+    });
+
+    res.json({
+      success: true,
+      signedUrl,
+      firebasePath,
+      fileName: safeFileName,
+      contentType: fileType
+    });
+  } catch (err) {
+    res.status(500).json({ 
+      error: 'Failed to generate upload URL', 
+      details: err.message 
+    });
+  }
+});
+
+router.post('/:unitId/files/metadata', async (req, res) => {
+  try {
+    const { unitId } = req.params;
+    const { 
+      title, 
+      originalName, 
+      contentType, 
+      size, 
+      firebasePath, 
+      downloadUrl, 
+      uploadedBy, 
+      uploadedByEmail 
+    } = req.body;
+
+    if (!title || !firebasePath || !downloadUrl) {
+      return res.status(400).json({ error: 'Required fields missing' });
+    }
+
+    const unit = await Unit.findById(unitId);
+    if (!unit) return res.status(404).json({ error: 'Unit not found' });
+
+    const fileDoc = new File({
+      title,
+      name: originalName || title,
+      type: contentType,
+      size: formatFileSize(size),
+      lastModified: new Date().toLocaleDateString(),
+      isUploadedFile: true,
+      isNotes: false,
+      isLink: false,
+      filePath: firebasePath,
+      url: downloadUrl,
+      uploadedBy: uploadedBy || unit.createdBy,
+      uploadedByEmail: uploadedByEmail || unit.createdByEmail,
+      unitId
+    });
+
+    const savedFile = await fileDoc.save();
+    unit.files.push(savedFile._id);
+    await unit.save();
+
+    const populated = await Unit.findById(unitId).populate('files');
+    res.json(populated);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to save file metadata', details: err.message });
+  }
+});
+
 router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
   try {
     const { unitId } = req.params;
@@ -163,90 +225,56 @@ router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
     const bucket = getStorage().bucket();
 
     if (fileType === 'upload' && req.file) {
-      console.log(`Uploading file: ${req.file.originalname}, Size: ${formatFileSize(req.file.size)}`);
-      
       const originalName = req.file.originalname;
       const fileExtension = path.extname(originalName);
       const firebaseFileName = `units/${unitId}/files/${Date.now()}-${Math.round(Math.random() * 1E9)}${fileExtension}`;
       const fileRef = bucket.file(firebaseFileName);
 
-      // IMPROVED: Upload with resumable upload for large files
-      try {
-        // For files larger than 50MB, use resumable upload
-        if (req.file.size > 50 * 1024 * 1024) {
-          console.log('Using resumable upload for large file...');
-          
-          // Create a resumable upload session
-          await fileRef.save(req.file.buffer, {
-            metadata: {
-              contentType: req.file.mimetype,
-            },
-            resumable: true, // Enable resumable upload
-            timeout: 600000, // 10 minutes timeout for large files
-          });
-        } else {
-          // Standard upload for smaller files
-          await fileRef.save(req.file.buffer, {
-            metadata: {
-              contentType: req.file.mimetype,
-            },
-            timeout: 300000, // 5 minutes timeout
-          });
-        }
-
-        console.log('File uploaded successfully to Firebase');
-
-        // Make the file publicly accessible (optional - adjust based on your security needs)
-        await fileRef.makePublic();
-        
-        // Get public URL
-        const publicUrl = `https://storage.googleapis.com/${bucket.name}/${firebaseFileName}`;
-
-        // Alternative: Use signed URL for private access
-        const [downloadURL] = await fileRef.getSignedUrl({
-          action: 'read',
-          expires: '03-01-2500', // Long expiry for public access
+      if (req.file.size > 50 * 1024 * 1024) {
+        await fileRef.save(req.file.buffer, {
+          metadata: { contentType: req.file.mimetype },
+          resumable: true,
+          timeout: 600000,
         });
-
-        const isTextFile =
-          req.file.mimetype.startsWith('text/') ||
-          req.file.mimetype === 'application/json' ||
-          originalName.match(/\.(txt|js|html|css|md)$/i);
-
-        const fileContent = isTextFile
-          ? req.file.buffer.toString('utf8')
-          : null;
-
-        fileData = new File({
-          title: fileName,
-          name: originalName,
-          type: req.file.mimetype,
-          size: formatFileSize(req.file.size),
-          content: fileContent,
-          lastModified: new Date().toLocaleDateString(),
-          isUploadedFile: true,
-          isNotes: false,
-          isLink: false,
-          filePath: firebaseFileName, // Store the Firebase path for deletion
-          url: downloadURL,
-          uploadedBy: uploadedBy || unit.createdBy,
-          uploadedByEmail: uploadedByEmail || unit.createdByEmail,
-          unitId: unitId
+      } else {
+        await fileRef.save(req.file.buffer, {
+          metadata: { contentType: req.file.mimetype },
+          timeout: 300000,
         });
-
-        console.log('File metadata saved to database');
-      } catch (uploadError) {
-        console.error('Firebase upload error:', uploadError);
-        
-        // Attempt to clean up partial upload
-        try {
-          await fileRef.delete();
-        } catch (cleanupError) {
-          console.error('Cleanup error:', cleanupError);
-        }
-        
-        throw new Error(`Upload failed: ${uploadError.message}`);
       }
+
+      await fileRef.makePublic();
+      
+      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${firebaseFileName}`;
+
+      const [downloadURL] = await fileRef.getSignedUrl({
+        action: 'read',
+        expires: '03-01-2500',
+      });
+
+      const isTextFile =
+        req.file.mimetype.startsWith('text/') ||
+        req.file.mimetype === 'application/json' ||
+        originalName.match(/\.(txt|js|html|css|md)$/i);
+
+      const fileContent = isTextFile ? req.file.buffer.toString('utf8') : null;
+
+      fileData = new File({
+        title: fileName,
+        name: originalName,
+        type: req.file.mimetype,
+        size: formatFileSize(req.file.size),
+        content: fileContent,
+        lastModified: new Date().toLocaleDateString(),
+        isUploadedFile: true,
+        isNotes: false,
+        isLink: false,
+        filePath: firebaseFileName,
+        url: downloadURL,
+        uploadedBy: uploadedBy || unit.createdBy,
+        uploadedByEmail: uploadedByEmail || unit.createdByEmail,
+        unitId: unitId
+      });
     } else if (fileType === 'notes' && notesContent) {
       const blob = Buffer.from(notesContent);
       fileData = new File({
@@ -295,12 +323,10 @@ router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
     const populatedUnit = await Unit.findById(unitId).populate('files');
     res.json(populatedUnit);
   } catch (err) {
-    console.error('Error adding file to unit:', err);
     res.status(500).json({ error: 'Failed to add file', details: err.message });
   }
 });
 
-// Get file info
 router.get('/:unitId/files/:fileId', async (req, res) => {
   try {
     const file = await File.findById(req.params.fileId);
@@ -326,7 +352,6 @@ router.get('/:unitId/files/:fileId', async (req, res) => {
   }
 });
 
-// Update unit
 router.put('/:unitId', async (req, res) => {
   try {
     const { unitId } = req.params;
@@ -380,7 +405,6 @@ router.put('/:unitId', async (req, res) => {
   }
 });
 
-// Update file in unit
 router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, res) => {
   try {
     const { unitId, fileId } = req.params;
@@ -406,15 +430,11 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
     const bucket = getStorage().bucket();
 
     if (fileType === 'upload' && req.file) {
-      // Delete old file from Firebase if it exists
       if (file.filePath) {
         const oldFileRef = bucket.file(file.filePath);
         try {
           await oldFileRef.delete();
-          console.log('Old file deleted from Firebase');
-        } catch (err) {
-          console.error('Error deleting old file:', err);
-        }
+        } catch (err) {}
       }
 
       const originalName = req.file.originalname;
@@ -422,7 +442,6 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
       const firebaseFileName = `units/${unitId}/files/${Date.now()}-${Math.round(Math.random() * 1E9)}${fileExtension}`;
       const fileRef = bucket.file(firebaseFileName);
 
-      // Use resumable upload for large files
       if (req.file.size > 50 * 1024 * 1024) {
         await fileRef.save(req.file.buffer, {
           metadata: { contentType: req.file.mimetype },
@@ -446,9 +465,7 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
         req.file.mimetype === 'application/json' ||
         originalName.match(/\.(txt|js|html|css|md)$/i);
 
-      const fileContent = isTextFile
-        ? req.file.buffer.toString('utf8')
-        : null;
+      const fileContent = isTextFile ? req.file.buffer.toString('utf8') : null;
 
       file.name = originalName;
       file.type = req.file.mimetype;
@@ -489,12 +506,10 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
     const populatedUnit = await Unit.findById(unitId).populate('files');
     res.json(populatedUnit);
   } catch (err) {
-    console.error('Error updating file:', err);
     res.status(500).json({ error: 'Failed to update file', details: err.message });
   }
 });
 
-// Delete unit
 router.delete('/:unitId', async (req, res) => {
   try {
     const { unitId } = req.params;
@@ -511,10 +526,7 @@ router.delete('/:unitId', async (req, res) => {
         const fileRef = bucket.file(file.filePath);
         try {
           await fileRef.delete();
-          console.log(`Deleted file: ${file.filePath}`);
-        } catch (err) {
-          console.error(`Error deleting file ${file.filePath}:`, err);
-        }
+        } catch (err) {}
       }
       await File.findByIdAndDelete(file._id);
     }
@@ -526,7 +538,6 @@ router.delete('/:unitId', async (req, res) => {
   }
 });
 
-// Delete file from unit
 router.delete('/:unitId/files/:fileId', async (req, res) => {
   try {
     const { unitId, fileId } = req.params;
@@ -546,10 +557,7 @@ router.delete('/:unitId/files/:fileId', async (req, res) => {
       const fileRef = bucket.file(file.filePath);
       try {
         await fileRef.delete();
-        console.log(`Deleted file: ${file.filePath}`);
-      } catch (err) {
-        console.error(`Error deleting file ${file.filePath}:`, err);
-      }
+      } catch (err) {}
     }
 
     unit.files = unit.files.filter((f) => f.toString() !== fileId);
