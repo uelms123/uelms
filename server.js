@@ -51,26 +51,8 @@ const bucket = admin.storage().bucket();
 const app = express();
 const port = process.env.PORT || 5000;
 
-// CRITICAL FIX: Increase body size limits for large file uploads
-app.use(express.urlencoded({ 
-  extended: true, 
-  limit: '500mb',           // INCREASED from default
-  parameterLimit: 50000     // Increase parameter limit as well
-}));
-
-app.use(express.json({ 
-  limit: '500mb'            // INCREASED from 100mb to 500mb
-}));
-
-// CRITICAL FIX: Set server timeout for long-running uploads
-app.use((req, res, next) => {
-  // Set timeout to 10 minutes for upload requests
-  if (req.path.includes('/files') || req.method === 'POST') {
-    req.setTimeout(600000); // 10 minutes
-    res.setTimeout(600000); // 10 minutes
-  }
-  next();
-});
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '100mb' }));
 
 app.use(cors({
   origin: [
@@ -95,11 +77,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// CRITICAL FIX: Increase MongoDB connection timeout
-mongoose.connect(process.env.MONGODB_URI, {
-  serverSelectionTimeoutMS: 30000,  // 30 seconds
-  socketTimeoutMS: 600000,          // 10 minutes for long operations
-})
+mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
     console.log('Connected to MongoDB');
   })
@@ -285,14 +263,12 @@ app.get('/api/classes', async (req, res) => {
     });
   } catch (err) {
     console.error('Error fetching classes:', err);
-    res.status(500).json({
+    res.status(500).json({ 
       success: false,
-      error: 'Failed to fetch classes: ' + err.message
+      error: 'Failed to fetch classes: ' + err.message 
     });
   }
 });
-
-
 
 app.post('/api/staff-with-password', async (req, res) => {
   let firebaseUser = null;
@@ -1227,26 +1203,6 @@ app.use('/', (req, res, next) => {
   });
 });
 
-app.get('/api/health', (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: 'Server is running',
-    timestamp: new Date().toISOString(),
-    services: {
-      mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-      firebase: 'initialized'
-    }
-  });
-});
-
-app.use('/', (req, res, next) => {
-  res.status(404).json({
-    success: false,
-    message: 'Route not found',
-    path: req.path
-  });
-});
-
 app.use((err, req, res, next) => {
   console.error('Global error handler:', err.stack);
   res.status(500).json({
@@ -1256,8 +1212,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-// CRITICAL FIX: Set server timeout
-const server = app.listen(port, () => {
+app.listen(port, () => {
   console.log(`Server running on port ${port}`);
   console.log(`Activity Dashboard endpoints:`);
   console.log(`  GET  /api/staff-activity/summary`);
@@ -1265,8 +1220,3 @@ const server = app.listen(port, () => {
   console.log(`  GET  /api/staff-activity/staff/:staffId`);
   console.log(`  GET  /api/staff/:identifier/classes`);
 });
-
-// Set server timeout to 10 minutes
-server.timeout = 600000; // 10 minutes
-server.keepAliveTimeout = 610000; // Slightly longer than timeout
-server.headersTimeout = 620000; // Slightly longer than keepAliveTimeout
