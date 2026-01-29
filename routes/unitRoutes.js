@@ -2,16 +2,27 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
-const fsPromises = require('fs').promises;
 const admin = require('firebase-admin');
 const { getStorage } = require('firebase-admin/storage');
+
 const Unit = require('../models/unit');
 const File = require('../models/files');
 const StaffActivity = require('../models/StaffActivity');
 const Class = require('../models/Class');
 const Staff = require('../models/Staff');
+const DailyUpload = require('../models/DailyUpload'); // ✅ NEW - Daily upload tracking
 
-// Utility function to format file size
+/* =====================================================
+   CONFIG
+===================================================== */
+
+// 🔴 DAILY UPLOAD LIMIT (CHANGE HERE)
+const DAILY_UPLOAD_LIMIT = 10 * 1024 * 1024 * 1024; // 10 GB/day
+
+/* =====================================================
+   HELPERS
+===================================================== */
+
 const formatFileSize = (bytes) => {
   if (bytes === 0) return '0 Bytes';
   const k = 1024;
@@ -20,25 +31,41 @@ const formatFileSize = (bytes) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
-// Multer configuration (memory storage - files will be uploaded to Firebase)
+// ✅ DAILY LIMIT CHECK (New Feature)
+const checkDailyLimit = async (uploadSize) => {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+  let record = await DailyUpload.findOne({ date: today });
+
+  if (!record) {
+    record = new DailyUpload({ date: today, totalBytes: 0 });
+  }
+
+  if (record.totalBytes + uploadSize > DAILY_UPLOAD_LIMIT) {
+    const remaining = DAILY_UPLOAD_LIMIT - record.totalBytes;
+    throw new Error(
+      `Daily upload limit exceeded. Remaining: ${formatFileSize(remaining)}`
+    );
+  }
+
+  record.totalBytes += uploadSize;
+  await record.save();
+};
+
+/* =====================================================
+   MULTER CONFIG
+===================================================== */
+
 const storage = multer.memoryStorage();
 
 const upload = multer({
-  storage: storage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit
+  storage,
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB per file
   fileFilter: (req, file, cb) => {
     const allowedTypes = [
-      'image/jpeg',
-      'image/png',
-      'image/gif',
-      'image/webp',
-      'video/mp4',
-      'video/mpeg',
-      'video/webm',
-      'video/ogg',
-      'audio/mpeg',
-      'audio/wav',
-      'audio/ogg',
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+      'video/mp4', 'video/mpeg', 'video/webm', 'video/ogg',
+      'audio/mpeg', 'audio/wav', 'audio/ogg',
       'application/pdf',
       'application/vnd.ms-powerpoint',
       'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -46,21 +73,18 @@ const upload = multer({
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/msword',
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'text/plain',
-      'application/json',
-      'text/html',
-      'text/css',
-      'application/javascript',
-      'text/markdown',
-      'application/zip',
+      'text/plain', 'application/json', 'text/html', 'text/css',
+      'application/javascript', 'text/markdown', 'application/zip',
     ];
-    if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error(`Invalid file type. Supported types: ${allowedTypes.join(', ')}`));
-    }
+
+    if (allowedTypes.includes(file.mimetype)) cb(null, true);
+    else cb(new Error(`Invalid file type. Supported types: ${allowedTypes.join(', ')}`));
   },
 });
+
+/* =====================================================
+   ROUTES
+===================================================== */
 
 // Get all units for a class
 router.get('/:classId', async (req, res) => {
@@ -72,7 +96,7 @@ router.get('/:classId', async (req, res) => {
   }
 });
 
-// Create new unit
+// Create new unit with StaffActivity tracking
 router.post('/', async (req, res) => {
   try {
     const { unitTitle, unitDescription, classId, staffId, staffEmail, staffName } = req.body;
@@ -93,6 +117,7 @@ router.post('/', async (req, res) => {
 
     const savedUnit = await newUnit.save();
 
+    // StaffActivity tracking (from old code)
     if (staffId && classId) {
       const classData = await Class.findById(classId);
       if (classData) {
@@ -138,7 +163,7 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Add file to unit - Upload to Firebase Storage
+// 🔥 ADD FILE TO UNIT (WITH DAILY LIMIT & improved error handling)
 router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
   try {
     const { unitId } = req.params;
@@ -156,49 +181,50 @@ router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
     let fileData;
     const bucket = getStorage().bucket();
 
+    /* ========== FILE UPLOAD ========== */
     if (fileType === 'upload' && req.file) {
+      // 🔐 DAILY LIMIT ENFORCEMENT (New Feature)
+      await checkDailyLimit(req.file.size);
+
       const originalName = req.file.originalname;
-      const fileExtension = path.extname(originalName);
-      const firebaseFileName = `units/${unitId}/files/${Date.now()}-${Math.round(Math.random() * 1E9)}${fileExtension}`;
-      const fileRef = bucket.file(firebaseFileName);
+      const ext = path.extname(originalName);
+      const firebasePath = `units/${unitId}/files/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+      const fileRef = bucket.file(firebasePath);
 
       await fileRef.save(req.file.buffer, {
-        metadata: {
-          contentType: req.file.mimetype,
-        },
+        metadata: { contentType: req.file.mimetype },
       });
 
-      const [downloadURL] = await fileRef.getSignedUrl({
+      const [url] = await fileRef.getSignedUrl({
         action: 'read',
-        expires: '03-01-2500', // Long expiry for public access
+        expires: '03-01-2500',
       });
 
-      const isTextFile =
+      const isText =
         req.file.mimetype.startsWith('text/') ||
         req.file.mimetype === 'application/json' ||
         originalName.match(/\.(txt|js|html|css|md)$/i);
-
-      const fileContent = isTextFile
-        ? req.file.buffer.toString('utf8')
-        : null;
 
       fileData = new File({
         title: fileName,
         name: originalName,
         type: req.file.mimetype,
         size: formatFileSize(req.file.size),
-        content: fileContent,
+        content: isText ? req.file.buffer.toString('utf8') : null,
         lastModified: new Date().toLocaleDateString(),
         isUploadedFile: true,
         isNotes: false,
         isLink: false,
         filePath: '',
-        url: downloadURL,
+        url,
         uploadedBy: uploadedBy || unit.createdBy,
         uploadedByEmail: uploadedByEmail || unit.createdByEmail,
-        unitId: unitId
+        unitId,
       });
-    } else if (fileType === 'notes' && notesContent) {
+    }
+
+    /* ========== NOTES ========== */
+    else if (fileType === 'notes' && notesContent) {
       const blob = Buffer.from(notesContent);
       fileData = new File({
         title: fileName,
@@ -214,9 +240,12 @@ router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
         url: '',
         uploadedBy: uploadedBy || unit.createdBy,
         uploadedByEmail: uploadedByEmail || unit.createdByEmail,
-        unitId: unitId
+        unitId,
       });
-    } else if (fileType === 'link' && linkUrl) {
+    }
+
+    /* ========== LINK ========== */
+    else if (fileType === 'link' && linkUrl) {
       if (!linkUrl.match(/^https?:\/\/[^\s/$.?#].[^\s]*$/)) {
         return res.status(400).json({ error: 'Invalid URL format' });
       }
@@ -234,18 +263,22 @@ router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
         url: linkUrl,
         uploadedBy: uploadedBy || unit.createdBy,
         uploadedByEmail: uploadedByEmail || unit.createdByEmail,
-        unitId: unitId
+        unitId,
       });
     } else {
-      return res.status(400).json({ error: 'Invalid file, notes content, or link URL' });
+      return res.status(400).json({ error: 'Invalid file data' });
     }
 
     const savedFile = await fileData.save();
     unit.files.push(savedFile._id);
     await unit.save();
+
     const populatedUnit = await Unit.findById(unitId).populate('files');
     res.status(201).json(populatedUnit);
   } catch (err) {
+    if (err.message.includes('Daily upload limit')) {
+      return res.status(400).json({ error: err.message });
+    }
     res.status(500).json({ error: 'Failed to add file', details: err.message });
   }
 });
@@ -276,7 +309,7 @@ router.get('/files/:fileId', async (req, res) => {
   }
 });
 
-// Update unit
+// Update unit with Overview notes handling
 router.put('/:unitId', async (req, res) => {
   try {
     const { unitId } = req.params;
@@ -330,7 +363,7 @@ router.put('/:unitId', async (req, res) => {
   }
 });
 
-// Update file in unit
+// Update file in unit (WITH DAILY LIMIT for file uploads)
 router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, res) => {
   try {
     const { unitId, fileId } = req.params;
@@ -356,18 +389,22 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
     const bucket = getStorage().bucket();
 
     if (fileType === 'upload' && req.file) {
+      // 🔐 DAILY LIMIT ENFORCEMENT for updates with new files
+      await checkDailyLimit(req.file.size);
+
       if (file.url) {
         const oldFileName = file.url.split('/').pop().split('?')[0];
         const oldFileRef = bucket.file(`units/${unitId}/files/${decodeURIComponent(oldFileName)}`);
         try {
           await oldFileRef.delete();
         } catch (err) {
+          // Ignore delete errors
         }
       }
 
       const originalName = req.file.originalname;
       const fileExtension = path.extname(originalName);
-      const firebaseFileName = `units/${unitId}/files/${Date.now()}-${Math.round(Math.random() * 1E9)}${fileExtension}`;
+      const firebaseFileName = `units/${unitId}/files/${Date.now()}-${Math.random().toString(36).slice(2)}${fileExtension}`;
       const fileRef = bucket.file(firebaseFileName);
 
       await fileRef.save(req.file.buffer, {
@@ -426,11 +463,14 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
     const populatedUnit = await Unit.findById(unitId).populate('files');
     res.json(populatedUnit);
   } catch (err) {
+    if (err.message.includes('Daily upload limit')) {
+      return res.status(400).json({ error: err.message });
+    }
     res.status(500).json({ error: 'Failed to update file', details: err.message });
   }
 });
 
-// Delete unit
+// Delete unit with file cleanup
 router.delete('/:unitId', async (req, res) => {
   try {
     const { unitId } = req.params;
@@ -449,6 +489,7 @@ router.delete('/:unitId', async (req, res) => {
         try {
           await fileRef.delete();
         } catch (err) {
+          // Ignore delete errors
         }
       }
       await File.findByIdAndDelete(file._id);
@@ -483,6 +524,7 @@ router.delete('/:unitId/files/:fileId', async (req, res) => {
       try {
         await fileRef.delete();
       } catch (err) {
+        // Ignore delete errors
       }
     }
 
