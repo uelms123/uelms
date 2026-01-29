@@ -60,7 +60,8 @@ const storage = multer.memoryStorage();
 
 const upload = multer({
   storage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB per file
+limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB
+ // 100 MB per file
   fileFilter: (req, file, cb) => {
     const allowedTypes = [
       'image/jpeg', 'image/png', 'image/gif', 'image/webp',
@@ -81,6 +82,22 @@ const upload = multer({
     else cb(new Error(`Invalid file type. Supported types: ${allowedTypes.join(', ')}`));
   },
 });
+
+const uploadMiddleware = (req, res, next) => {
+  upload.single('fileUpload')(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          error: 'File too large. Maximum allowed size is 500 MB'
+        });
+      }
+    }
+    if (err) {
+      return res.status(400).json({ error: err.message });
+    }
+    next();
+  });
+};
 
 /* =====================================================
    ROUTES
@@ -164,7 +181,8 @@ router.post('/', async (req, res) => {
 });
 
 // 🔥 ADD FILE TO UNIT (WITH DAILY LIMIT & improved error handling)
-router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
+router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
+
   try {
     const { unitId } = req.params;
     const { fileName, notesContent, fileType, linkUrl, uploadedBy, uploadedByEmail } = req.body;
