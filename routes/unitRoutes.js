@@ -60,8 +60,9 @@ const storage = multer.memoryStorage();
 
 const upload = multer({
   storage,
-limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB
- // 100 MB per file
+  limits: { 
+    fileSize: 10 * 1024 * 1024 * 1024   // 10 GB in bytes
+  },
   fileFilter: (req, file, cb) => {
     const allowedTypes = [
       'image/jpeg', 'image/png', 'image/gif', 'image/webp',
@@ -83,14 +84,16 @@ limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB
   },
 });
 
+// Middleware for handling upload errors
 const uploadMiddleware = (req, res, next) => {
   upload.single('fileUpload')(req, res, (err) => {
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {
         return res.status(400).json({
-          error: 'File too large. Maximum allowed size is 500 MB'
+          error: 'File too large. Maximum allowed size is 10 GB'
         });
       }
+      return res.status(400).json({ error: `Upload error: ${err.message}` });
     }
     if (err) {
       return res.status(400).json({ error: err.message });
@@ -182,7 +185,6 @@ router.post('/', async (req, res) => {
 
 // 🔥 ADD FILE TO UNIT (WITH DAILY LIMIT & improved error handling)
 router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
-
   try {
     const { unitId } = req.params;
     const { fileName, notesContent, fileType, linkUrl, uploadedBy, uploadedByEmail } = req.body;
@@ -382,7 +384,7 @@ router.put('/:unitId', async (req, res) => {
 });
 
 // Update file in unit (WITH DAILY LIMIT for file uploads)
-router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, res) => {
+router.put('/:unitId/files/:fileId', uploadMiddleware, async (req, res) => {
   try {
     const { unitId, fileId } = req.params;
     const { fileName, notesContent, fileType, linkUrl } = req.body;
