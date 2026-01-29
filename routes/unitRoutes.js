@@ -25,7 +25,10 @@ const storage = multer.memoryStorage();
 
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit
+  limits: { 
+    fileSize: 500 * 1024 * 1024, // INCREASED TO 500MB limit
+    fieldSize: 500 * 1024 * 1024  // Add field size limit
+  },
   fileFilter: (req, file, cb) => {
     const allowedTypes = [
       'image/jpeg',
@@ -36,6 +39,8 @@ const upload = multer({
       'video/mpeg',
       'video/webm',
       'video/ogg',
+      'video/quicktime', // Add .mov support
+      'video/x-msvideo', // Add .avi support
       'audio/mpeg',
       'audio/wav',
       'audio/ogg',
@@ -139,6 +144,7 @@ router.post('/', async (req, res) => {
 });
 
 // Add file to unit - Upload to Firebase Storage
+// IMPROVED ERROR HANDLING AND CHUNKED UPLOAD SUPPORT
 router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
   try {
     const { unitId } = req.params;
@@ -157,47 +163,90 @@ router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
     const bucket = getStorage().bucket();
 
     if (fileType === 'upload' && req.file) {
+      console.log(`Uploading file: ${req.file.originalname}, Size: ${formatFileSize(req.file.size)}`);
+      
       const originalName = req.file.originalname;
       const fileExtension = path.extname(originalName);
       const firebaseFileName = `units/${unitId}/files/${Date.now()}-${Math.round(Math.random() * 1E9)}${fileExtension}`;
       const fileRef = bucket.file(firebaseFileName);
 
-      await fileRef.save(req.file.buffer, {
-        metadata: {
-          contentType: req.file.mimetype,
-        },
-      });
+      // IMPROVED: Upload with resumable upload for large files
+      try {
+        // For files larger than 50MB, use resumable upload
+        if (req.file.size > 50 * 1024 * 1024) {
+          console.log('Using resumable upload for large file...');
+          
+          // Create a resumable upload session
+          await fileRef.save(req.file.buffer, {
+            metadata: {
+              contentType: req.file.mimetype,
+            },
+            resumable: true, // Enable resumable upload
+            timeout: 600000, // 10 minutes timeout for large files
+          });
+        } else {
+          // Standard upload for smaller files
+          await fileRef.save(req.file.buffer, {
+            metadata: {
+              contentType: req.file.mimetype,
+            },
+            timeout: 300000, // 5 minutes timeout
+          });
+        }
 
-      const [downloadURL] = await fileRef.getSignedUrl({
-        action: 'read',
-        expires: '03-01-2500', // Long expiry for public access
-      });
+        console.log('File uploaded successfully to Firebase');
 
-      const isTextFile =
-        req.file.mimetype.startsWith('text/') ||
-        req.file.mimetype === 'application/json' ||
-        originalName.match(/\.(txt|js|html|css|md)$/i);
+        // Make the file publicly accessible (optional - adjust based on your security needs)
+        await fileRef.makePublic();
+        
+        // Get public URL
+        const publicUrl = `https://storage.googleapis.com/${bucket.name}/${firebaseFileName}`;
 
-      const fileContent = isTextFile
-        ? req.file.buffer.toString('utf8')
-        : null;
+        // Alternative: Use signed URL for private access
+        const [downloadURL] = await fileRef.getSignedUrl({
+          action: 'read',
+          expires: '03-01-2500', // Long expiry for public access
+        });
 
-      fileData = new File({
-        title: fileName,
-        name: originalName,
-        type: req.file.mimetype,
-        size: formatFileSize(req.file.size),
-        content: fileContent,
-        lastModified: new Date().toLocaleDateString(),
-        isUploadedFile: true,
-        isNotes: false,
-        isLink: false,
-        filePath: '',
-        url: downloadURL,
-        uploadedBy: uploadedBy || unit.createdBy,
-        uploadedByEmail: uploadedByEmail || unit.createdByEmail,
-        unitId: unitId
-      });
+        const isTextFile =
+          req.file.mimetype.startsWith('text/') ||
+          req.file.mimetype === 'application/json' ||
+          originalName.match(/\.(txt|js|html|css|md)$/i);
+
+        const fileContent = isTextFile
+          ? req.file.buffer.toString('utf8')
+          : null;
+
+        fileData = new File({
+          title: fileName,
+          name: originalName,
+          type: req.file.mimetype,
+          size: formatFileSize(req.file.size),
+          content: fileContent,
+          lastModified: new Date().toLocaleDateString(),
+          isUploadedFile: true,
+          isNotes: false,
+          isLink: false,
+          filePath: firebaseFileName, // Store the Firebase path for deletion
+          url: downloadURL,
+          uploadedBy: uploadedBy || unit.createdBy,
+          uploadedByEmail: uploadedByEmail || unit.createdByEmail,
+          unitId: unitId
+        });
+
+        console.log('File metadata saved to database');
+      } catch (uploadError) {
+        console.error('Firebase upload error:', uploadError);
+        
+        // Attempt to clean up partial upload
+        try {
+          await fileRef.delete();
+        } catch (cleanupError) {
+          console.error('Cleanup error:', cleanupError);
+        }
+        
+        throw new Error(`Upload failed: ${uploadError.message}`);
+      }
     } else if (fileType === 'notes' && notesContent) {
       const blob = Buffer.from(notesContent);
       fileData = new File({
@@ -244,14 +293,15 @@ router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
     unit.files.push(savedFile._id);
     await unit.save();
     const populatedUnit = await Unit.findById(unitId).populate('files');
-    res.status(201).json(populatedUnit);
+    res.json(populatedUnit);
   } catch (err) {
+    console.error('Error adding file to unit:', err);
     res.status(500).json({ error: 'Failed to add file', details: err.message });
   }
 });
 
-// Serve file info / URL (no streaming from server)
-router.get('/files/:fileId', async (req, res) => {
+// Get file info
+router.get('/:unitId/files/:fileId', async (req, res) => {
   try {
     const file = await File.findById(req.params.fileId);
     if (!file) {
@@ -356,12 +406,14 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
     const bucket = getStorage().bucket();
 
     if (fileType === 'upload' && req.file) {
-      if (file.url) {
-        const oldFileName = file.url.split('/').pop().split('?')[0];
-        const oldFileRef = bucket.file(`units/${unitId}/files/${decodeURIComponent(oldFileName)}`);
+      // Delete old file from Firebase if it exists
+      if (file.filePath) {
+        const oldFileRef = bucket.file(file.filePath);
         try {
           await oldFileRef.delete();
+          console.log('Old file deleted from Firebase');
         } catch (err) {
+          console.error('Error deleting old file:', err);
         }
       }
 
@@ -370,9 +422,19 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
       const firebaseFileName = `units/${unitId}/files/${Date.now()}-${Math.round(Math.random() * 1E9)}${fileExtension}`;
       const fileRef = bucket.file(firebaseFileName);
 
-      await fileRef.save(req.file.buffer, {
-        metadata: { contentType: req.file.mimetype },
-      });
+      // Use resumable upload for large files
+      if (req.file.size > 50 * 1024 * 1024) {
+        await fileRef.save(req.file.buffer, {
+          metadata: { contentType: req.file.mimetype },
+          resumable: true,
+          timeout: 600000,
+        });
+      } else {
+        await fileRef.save(req.file.buffer, {
+          metadata: { contentType: req.file.mimetype },
+          timeout: 300000,
+        });
+      }
 
       const [downloadURL] = await fileRef.getSignedUrl({
         action: 'read',
@@ -395,6 +457,7 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
       file.isUploadedFile = true;
       file.isNotes = false;
       file.isLink = false;
+      file.filePath = firebaseFileName;
       file.url = downloadURL;
     } else if (fileType === 'notes' && notesContent) {
       const blob = Buffer.from(notesContent);
@@ -426,6 +489,7 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
     const populatedUnit = await Unit.findById(unitId).populate('files');
     res.json(populatedUnit);
   } catch (err) {
+    console.error('Error updating file:', err);
     res.status(500).json({ error: 'Failed to update file', details: err.message });
   }
 });
@@ -443,12 +507,13 @@ router.delete('/:unitId', async (req, res) => {
     const bucket = getStorage().bucket();
 
     for (const file of unit.files) {
-      if (file.isUploadedFile && file.url) {
-        const fileName = file.url.split('/').pop().split('?')[0];
-        const fileRef = bucket.file(`units/${unitId}/files/${decodeURIComponent(fileName)}`);
+      if (file.isUploadedFile && file.filePath) {
+        const fileRef = bucket.file(file.filePath);
         try {
           await fileRef.delete();
+          console.log(`Deleted file: ${file.filePath}`);
         } catch (err) {
+          console.error(`Error deleting file ${file.filePath}:`, err);
         }
       }
       await File.findByIdAndDelete(file._id);
@@ -476,13 +541,14 @@ router.delete('/:unitId/files/:fileId', async (req, res) => {
       return res.status(404).json({ error: 'File not found' });
     }
 
-    if (file.isUploadedFile && file.url) {
+    if (file.isUploadedFile && file.filePath) {
       const bucket = getStorage().bucket();
-      const fileName = file.url.split('/').pop().split('?')[0];
-      const fileRef = bucket.file(`units/${unitId}/files/${decodeURIComponent(fileName)}`);
+      const fileRef = bucket.file(file.filePath);
       try {
         await fileRef.delete();
+        console.log(`Deleted file: ${file.filePath}`);
       } catch (err) {
+        console.error(`Error deleting file ${file.filePath}:`, err);
       }
     }
 
