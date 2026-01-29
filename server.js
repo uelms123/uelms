@@ -22,7 +22,6 @@ const googleMeetAttendanceRoutes = require('./routes/googleMeetAttendance');
 const staffMeetingsRoutes = require('./routes/staffMeetings');
 
 require('./models/files');
-require('./models/DailyUpload');
 require('./models/unit');
 const Staff = require('./models/Staff');
 const Student = require('./models/Students');
