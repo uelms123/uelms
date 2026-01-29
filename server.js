@@ -22,13 +22,12 @@ const googleMeetAttendanceRoutes = require('./routes/googleMeetAttendance');
 const staffMeetingsRoutes = require('./routes/staffMeetings');
 
 require('./models/files');
-require('./models/unit');
 require('./models/DailyUpload');
+require('./models/unit');
 const Staff = require('./models/Staff');
 const Student = require('./models/Students');
 const Class = require('./models/Class');
 const StaffActivity = require('./models/StaffActivity');
-
 
 const firebaseConfig = {
   projectId: process.env.FIREBASE_PROJECT_ID,
@@ -1216,7 +1215,6 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
-  console.log(`CORS enabled for: http://localhost:3000`);
   console.log(`Activity Dashboard endpoints:`);
   console.log(`  GET  /api/staff-activity/summary`);
   console.log(`  GET  /api/staff-activity/all`);

@@ -24,7 +24,21 @@ router.get('/', async (req, res) => {
     });
   }
 });
+router.post('/update-password', async (req, res) => {
+  const { email, newPassword } = req.body;
 
+  try {
+    const user = await admin.auth().getUserByEmail(email);
+    await admin.auth().updateUser(user.uid, {
+      password: newPassword,
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
 /* =====================================================
    GET ALL STAFF WITH PASSWORDS (FOR ADMIN)
    GET /api/staff/with-passwords
