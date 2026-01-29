@@ -23,6 +23,7 @@ const staffMeetingsRoutes = require('./routes/staffMeetings');
 
 require('./models/files');
 require('./models/unit');
+require('./models/DailyUpload');
 const Staff = require('./models/Staff');
 const Student = require('./models/Students');
 const Class = require('./models/Class');
@@ -51,8 +52,36 @@ const bucket = admin.storage().bucket();
 const app = express();
 const port = process.env.PORT || 5000;
 
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json({ limit: '100mb' }));
+// Create temp directory for file uploads
+const tempDir = path.join(__dirname, 'temp_uploads');
+if (!fs.existsSync(tempDir)) {
+  fs.mkdirSync(tempDir, { recursive: true });
+  console.log('Created temp uploads directory:', tempDir);
+}
+
+// Clean up temp files periodically
+setInterval(() => {
+  if (fs.existsSync(tempDir)) {
+    fs.readdir(tempDir, (err, files) => {
+      if (err) return;
+      const now = Date.now();
+      files.forEach(file => {
+        const filePath = path.join(tempDir, file);
+        fs.stat(filePath, (err, stat) => {
+          if (err) return;
+          // Delete files older than 1 hour
+          if (now - stat.mtimeMs > 3600000) {
+            fs.unlink(filePath, () => {});
+          }
+        });
+      });
+    });
+  }
+}, 3600000); // Run every hour
+
+// Increase payload size limits
+app.use(express.urlencoded({ extended: true, limit: '10gb' }));
+app.use(express.json({ limit: '10gb' }));
 
 app.use(cors({
   origin: [
@@ -64,7 +93,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   credentials: true
 }));
-
 
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
@@ -99,7 +127,6 @@ app.use('/api/programs', programRoutes);
 app.use('/api/staff-activity', staffActivityRoutes);
 app.use('/api/google-meet', require('./routes/googleMeetAttendance'));
 app.use('/api/staff-meetings', staffMeetingsRoutes);
-
 
 app.get('/api/staff-with-passwords', async (req, res) => {
   try {
@@ -535,7 +562,6 @@ app.post('/api/students-with-password', async (req, res) => {
   }
 });
 
-// Enhanced bulk upload endpoint with better error handling
 // Enhanced bulk upload endpoint - FIXED VERSION
 app.post('/api/bulk-users-enhanced', async (req, res) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -1214,6 +1240,7 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
+  console.log(`CORS enabled for: http://localhost:3000`);
   console.log(`Activity Dashboard endpoints:`);
   console.log(`  GET  /api/staff-activity/summary`);
   console.log(`  GET  /api/staff-activity/all`);
