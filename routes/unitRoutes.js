@@ -2,27 +2,16 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
+const fsPromises = require('fs').promises;
 const admin = require('firebase-admin');
 const { getStorage } = require('firebase-admin/storage');
-const fs = require('fs');
-
 const Unit = require('../models/unit');
 const File = require('../models/files');
 const StaffActivity = require('../models/StaffActivity');
 const Class = require('../models/Class');
 const Staff = require('../models/Staff');
-const DailyUpload = require('../models/DailyUpload');
 
-/* =====================================================
-   CONFIG
-===================================================== */
-
-const DAILY_UPLOAD_LIMIT = 10 * 1024 * 1024 * 1024; // 10 GB/day
-
-/* =====================================================
-   HELPERS
-===================================================== */
-
+// Utility function to format file size
 const formatFileSize = (bytes) => {
   if (bytes === 0) return '0 Bytes';
   const k = 1024;
@@ -31,56 +20,25 @@ const formatFileSize = (bytes) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
-const checkDailyLimit = async (uploadSize) => {
-  const today = new Date().toISOString().slice(0, 10);
-
-  let record = await DailyUpload.findOne({ date: today });
-
-  if (!record) {
-    record = new DailyUpload({ date: today, totalBytes: 0 });
-  }
-
-  if (record.totalBytes + uploadSize > DAILY_UPLOAD_LIMIT) {
-    const remaining = DAILY_UPLOAD_LIMIT - record.totalBytes;
-    throw new Error(
-      `Daily upload limit exceeded. Remaining: ${formatFileSize(remaining)}`
-    );
-  }
-
-  record.totalBytes += uploadSize;
-  await record.save();
-};
-
-/* =====================================================
-   MULTER CONFIG - DISK STORAGE FOR LARGE FILES
-===================================================== */
-
-const tempDir = path.join(__dirname, '../temp_uploads');
-if (!fs.existsSync(tempDir)) {
-  fs.mkdirSync(tempDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, tempDir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    cb(null, uniqueSuffix + '-' + safeName);
-  }
-});
+// Multer configuration (memory storage - files will be uploaded to Firebase)
+const storage = multer.memoryStorage();
 
 const upload = multer({
   storage: storage,
-  limits: { 
-    fileSize: 10 * 1024 * 1024 * 1024
-  },
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit
   fileFilter: (req, file, cb) => {
     const allowedTypes = [
-      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
-      'video/mp4', 'video/mpeg', 'video/webm', 'video/ogg',
-      'audio/mpeg', 'audio/wav', 'audio/ogg',
+      'image/jpeg',
+      'image/png',
+      'image/gif',
+      'image/webp',
+      'video/mp4',
+      'video/mpeg',
+      'video/webm',
+      'video/ogg',
+      'audio/mpeg',
+      'audio/wav',
+      'audio/ogg',
       'application/pdf',
       'application/vnd.ms-powerpoint',
       'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -88,10 +46,14 @@ const upload = multer({
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/msword',
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'text/plain', 'application/json', 'text/html', 'text/css',
-      'application/javascript', 'text/markdown', 'application/zip',
+      'text/plain',
+      'application/json',
+      'text/html',
+      'text/css',
+      'application/javascript',
+      'text/markdown',
+      'application/zip',
     ];
-
     if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
@@ -99,73 +61,6 @@ const upload = multer({
     }
   },
 });
-
-const uploadMiddleware = (req, res, next) => {
-  upload.single('fileUpload')(req, res, (err) => {
-    if (err instanceof multer.MulterError) {
-      if (err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(400).json({
-          error: 'File too large. Maximum allowed size is 10 GB'
-        });
-      }
-    }
-    if (err) {
-      return res.status(400).json({ error: err.message });
-    }
-    next();
-  });
-};
-
-/* =====================================================
-   FIREBASE UPLOAD HELPER FUNCTION
-===================================================== */
-
-const uploadToFirebase = async (localFilePath, destinationPath, contentType) => {
-  const bucket = getStorage().bucket();
-  
-  return new Promise((resolve, reject) => {
-    if (!fs.existsSync(localFilePath)) {
-      return reject(new Error('Local file not found'));
-    }
-
-    const firebaseFile = bucket.file(destinationPath);
-    const writeStream = firebaseFile.createWriteStream({
-      metadata: {
-        contentType: contentType
-      },
-      resumable: false
-    });
-
-    const readStream = fs.createReadStream(localFilePath);
-
-    readStream.pipe(writeStream)
-      .on('error', (error) => {
-        reject(error);
-      })
-      .on('finish', async () => {
-        try {
-          // Clean up temp file
-          fs.unlinkSync(localFilePath);
-          
-          // Generate signed URL
-          const [url] = await firebaseFile.getSignedUrl({
-            action: 'read',
-            expires: '03-01-2500',
-          });
-          resolve({ url, fileName: path.basename(destinationPath) });
-        } catch (urlError) {
-          if (fs.existsSync(localFilePath)) {
-            fs.unlinkSync(localFilePath);
-          }
-          reject(urlError);
-        }
-      });
-  });
-};
-
-/* =====================================================
-   ROUTES - ALL EXISTING FUNCTIONALITY PRESERVED
-===================================================== */
 
 // Get all units for a class
 router.get('/:classId', async (req, res) => {
@@ -177,7 +72,7 @@ router.get('/:classId', async (req, res) => {
   }
 });
 
-// Create new unit with StaffActivity tracking - KEEP EXISTING TRACKING LOGIC
+// Create new unit
 router.post('/', async (req, res) => {
   try {
     const { unitTitle, unitDescription, classId, staffId, staffEmail, staffName } = req.body;
@@ -198,81 +93,53 @@ router.post('/', async (req, res) => {
 
     const savedUnit = await newUnit.save();
 
-    // STAFF ACTIVITY TRACKING - IMPORTANT FOR ASSIGNMENT COUNTING
     if (staffId && classId) {
-      try {
-        const classData = await Class.findById(classId);
-        if (classData) {
-          let activity = await StaffActivity.findOne({ staffId, classId });
+      const classData = await Class.findById(classId);
+      if (classData) {
+        let activity = await StaffActivity.findOne({ staffId, classId });
 
-          let finalStaffName = staffName;
-          if (!finalStaffName) {
-            const staffData = await Staff.findOne({ staffId });
-            finalStaffName = staffData ? staffData.name : 'Unknown Staff';
-          }
+        let finalStaffName = staffName;
+        if (!finalStaffName) {
+          const staffData = await Staff.findOne({ staffId });
+          finalStaffName = staffData ? staffData.name : 'Unknown Staff';
+        }
 
-          if (!activity) {
-            activity = new StaffActivity({
-              staffId,
-              staffEmail: staffEmail || '',
-              staffName: finalStaffName,
-              classId,
-              className: classData.name,
-              classSubject: classData.subject || '',
-              classSection: classData.section || '',
-              classCreatedDate: classData.createdAt,
-            });
-          }
-
-          // Track assessments (units) in StaffActivity
-          activity.totalAssessments = (activity.totalAssessments || 0) + 1;
-          
-          // Ensure activities object exists
-          if (!activity.activities) {
-            activity.activities = {};
-          }
-          
-          if (!activity.activities.assessments) {
-            activity.activities.assessments = { 
-              count: 0, 
-              lastUpdated: new Date(), 
-              items: [] 
-            };
-          }
-          
-          activity.activities.assessments.count += 1;
-          activity.activities.assessments.lastUpdated = new Date();
-          activity.activities.assessments.items.push({
-            title: unitTitle,
-            createdAt: new Date(),
-            type: 'unit',
-            description: unitDescription || '',
-            unitId: savedUnit._id
-          });
-
-          await activity.save();
-          console.log('StaffActivity updated for unit creation:', {
+        if (!activity) {
+          activity = new StaffActivity({
             staffId,
+            staffEmail: staffEmail || '',
+            staffName: finalStaffName,
             classId,
-            unitTitle,
-            totalAssessments: activity.totalAssessments
+            className: classData.name,
+            classSubject: classData.subject || '',
+            classSection: classData.section || '',
+            classCreatedDate: classData.createdAt,
           });
         }
-      } catch (activityErr) {
-        console.error('Error updating StaffActivity for unit creation:', activityErr);
-        // Don't fail the unit creation if activity tracking fails
+
+        activity.totalAssessments = (activity.totalAssessments || 0) + 1;
+        activity.activities.assessments = activity.activities.assessments || { count: 0, lastUpdated: new Date(), items: [] };
+        activity.activities.assessments.count += 1;
+        activity.activities.assessments.lastUpdated = new Date();
+        activity.activities.assessments.items.push({
+          title: unitTitle,
+          createdAt: new Date(),
+          type: 'unit',
+          description: unitDescription || ''
+        });
+
+        await activity.save();
       }
     }
 
     res.status(201).json(savedUnit);
   } catch (error) {
-    console.error('Error creating unit:', error);
     res.status(500).json({ error: 'Failed to create unit', details: error.message });
   }
 });
 
-// Add file to unit with daily limit
-router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
+// Add file to unit - Upload to Firebase Storage
+router.post('/:unitId/files', upload.single('fileUpload'), async (req, res) => {
   try {
     const { unitId } = req.params;
     const { fileName, notesContent, fileType, linkUrl, uploadedBy, uploadedByEmail } = req.body;
@@ -287,30 +154,33 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
     }
 
     let fileData;
+    const bucket = getStorage().bucket();
 
-    // FILE UPLOAD
     if (fileType === 'upload' && req.file) {
-      await checkDailyLimit(req.file.size);
-
       const originalName = req.file.originalname;
-      const ext = path.extname(originalName);
-      const firebasePath = `units/${unitId}/files/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
-      
-      const uploadResult = await uploadToFirebase(
-        req.file.path, 
-        firebasePath, 
-        req.file.mimetype
-      );
+      const fileExtension = path.extname(originalName);
+      const firebaseFileName = `units/${unitId}/files/${Date.now()}-${Math.round(Math.random() * 1E9)}${fileExtension}`;
+      const fileRef = bucket.file(firebaseFileName);
 
-      const isText =
+      await fileRef.save(req.file.buffer, {
+        metadata: {
+          contentType: req.file.mimetype,
+        },
+      });
+
+      const [downloadURL] = await fileRef.getSignedUrl({
+        action: 'read',
+        expires: '03-01-2500', // Long expiry for public access
+      });
+
+      const isTextFile =
         req.file.mimetype.startsWith('text/') ||
         req.file.mimetype === 'application/json' ||
         originalName.match(/\.(txt|js|html|css|md)$/i);
 
-      let fileContent = null;
-      if (isText && fs.existsSync(req.file.path)) {
-        fileContent = fs.readFileSync(req.file.path, 'utf8');
-      }
+      const fileContent = isTextFile
+        ? req.file.buffer.toString('utf8')
+        : null;
 
       fileData = new File({
         title: fileName,
@@ -323,15 +193,12 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
         isNotes: false,
         isLink: false,
         filePath: '',
-        url: uploadResult.url,
+        url: downloadURL,
         uploadedBy: uploadedBy || unit.createdBy,
         uploadedByEmail: uploadedByEmail || unit.createdByEmail,
-        unitId,
+        unitId: unitId
       });
-    }
-
-    // NOTES
-    else if (fileType === 'notes' && notesContent) {
+    } else if (fileType === 'notes' && notesContent) {
       const blob = Buffer.from(notesContent);
       fileData = new File({
         title: fileName,
@@ -347,12 +214,9 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
         url: '',
         uploadedBy: uploadedBy || unit.createdBy,
         uploadedByEmail: uploadedByEmail || unit.createdByEmail,
-        unitId,
+        unitId: unitId
       });
-    }
-
-    // LINK
-    else if (fileType === 'link' && linkUrl) {
+    } else if (fileType === 'link' && linkUrl) {
       if (!linkUrl.match(/^https?:\/\/[^\s/$.?#].[^\s]*$/)) {
         return res.status(400).json({ error: 'Invalid URL format' });
       }
@@ -370,32 +234,23 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
         url: linkUrl,
         uploadedBy: uploadedBy || unit.createdBy,
         uploadedByEmail: uploadedByEmail || unit.createdByEmail,
-        unitId,
+        unitId: unitId
       });
     } else {
-      return res.status(400).json({ error: 'Invalid file data' });
+      return res.status(400).json({ error: 'Invalid file, notes content, or link URL' });
     }
 
     const savedFile = await fileData.save();
     unit.files.push(savedFile._id);
     await unit.save();
-
     const populatedUnit = await Unit.findById(unitId).populate('files');
     res.status(201).json(populatedUnit);
   } catch (err) {
-    if (req.file && req.file.path && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
-    
-    if (err.message.includes('Daily upload limit')) {
-      return res.status(400).json({ error: err.message });
-    }
-    console.error('Error adding file:', err);
     res.status(500).json({ error: 'Failed to add file', details: err.message });
   }
 });
 
-// Serve file info / URL
+// Serve file info / URL (no streaming from server)
 router.get('/files/:fileId', async (req, res) => {
   try {
     const file = await File.findById(req.params.fileId);
@@ -421,7 +276,7 @@ router.get('/files/:fileId', async (req, res) => {
   }
 });
 
-// Update unit with Overview notes handling
+// Update unit
 router.put('/:unitId', async (req, res) => {
   try {
     const { unitId } = req.params;
@@ -501,39 +356,37 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
     const bucket = getStorage().bucket();
 
     if (fileType === 'upload' && req.file) {
-      await checkDailyLimit(req.file.size);
-
-      // Delete old file from Firebase if it exists
       if (file.url) {
+        const oldFileName = file.url.split('/').pop().split('?')[0];
+        const oldFileRef = bucket.file(`units/${unitId}/files/${decodeURIComponent(oldFileName)}`);
         try {
-          const urlObj = new URL(file.url);
-          const filePath = decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
-          const oldFileRef = bucket.file(filePath);
           await oldFileRef.delete();
-        } catch (deleteErr) {
-          console.log('Could not delete old file:', deleteErr.message);
+        } catch (err) {
         }
       }
 
       const originalName = req.file.originalname;
       const fileExtension = path.extname(originalName);
-      const firebaseFileName = `units/${unitId}/files/${Date.now()}-${Math.random().toString(36).slice(2)}${fileExtension}`;
-      
-      const uploadResult = await uploadToFirebase(
-        req.file.path, 
-        firebaseFileName, 
-        req.file.mimetype
-      );
+      const firebaseFileName = `units/${unitId}/files/${Date.now()}-${Math.round(Math.random() * 1E9)}${fileExtension}`;
+      const fileRef = bucket.file(firebaseFileName);
+
+      await fileRef.save(req.file.buffer, {
+        metadata: { contentType: req.file.mimetype },
+      });
+
+      const [downloadURL] = await fileRef.getSignedUrl({
+        action: 'read',
+        expires: '03-01-2500',
+      });
 
       const isTextFile =
         req.file.mimetype.startsWith('text/') ||
         req.file.mimetype === 'application/json' ||
         originalName.match(/\.(txt|js|html|css|md)$/i);
 
-      let fileContent = null;
-      if (isTextFile && fs.existsSync(req.file.path)) {
-        fileContent = fs.readFileSync(req.file.path, 'utf8');
-      }
+      const fileContent = isTextFile
+        ? req.file.buffer.toString('utf8')
+        : null;
 
       file.name = originalName;
       file.type = req.file.mimetype;
@@ -542,7 +395,7 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
       file.isUploadedFile = true;
       file.isNotes = false;
       file.isLink = false;
-      file.url = uploadResult.url;
+      file.url = downloadURL;
     } else if (fileType === 'notes' && notesContent) {
       const blob = Buffer.from(notesContent);
       file.name = fileName + '.txt';
@@ -573,18 +426,11 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
     const populatedUnit = await Unit.findById(unitId).populate('files');
     res.json(populatedUnit);
   } catch (err) {
-    if (req.file && req.file.path && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
-    
-    if (err.message.includes('Daily upload limit')) {
-      return res.status(400).json({ error: err.message });
-    }
     res.status(500).json({ error: 'Failed to update file', details: err.message });
   }
 });
 
-// Delete unit with file cleanup
+// Delete unit
 router.delete('/:unitId', async (req, res) => {
   try {
     const { unitId } = req.params;
@@ -598,13 +444,11 @@ router.delete('/:unitId', async (req, res) => {
 
     for (const file of unit.files) {
       if (file.isUploadedFile && file.url) {
+        const fileName = file.url.split('/').pop().split('?')[0];
+        const fileRef = bucket.file(`units/${unitId}/files/${decodeURIComponent(fileName)}`);
         try {
-          const urlObj = new URL(file.url);
-          const filePath = decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
-          const fileRef = bucket.file(filePath);
           await fileRef.delete();
         } catch (err) {
-          // Ignore delete errors
         }
       }
       await File.findByIdAndDelete(file._id);
@@ -634,13 +478,11 @@ router.delete('/:unitId/files/:fileId', async (req, res) => {
 
     if (file.isUploadedFile && file.url) {
       const bucket = getStorage().bucket();
+      const fileName = file.url.split('/').pop().split('?')[0];
+      const fileRef = bucket.file(`units/${unitId}/files/${decodeURIComponent(fileName)}`);
       try {
-        const urlObj = new URL(file.url);
-        const filePath = decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
-        const fileRef = bucket.file(filePath);
         await fileRef.delete();
       } catch (err) {
-        // Ignore delete errors
       }
     }
 
@@ -655,3 +497,5 @@ router.delete('/:unitId/files/:fileId', async (req, res) => {
 });
 
 module.exports = router;
+
+

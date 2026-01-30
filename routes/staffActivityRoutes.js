@@ -54,7 +54,7 @@ router.use((req, res, next) => {
   next();
 });
 
-// TRACK VISIT - FIXED
+
 router.post('/track-visit', async (req, res) => {
   try {
     const { staffId, staffEmail, staffName, classId } = req.body;
@@ -81,9 +81,8 @@ router.post('/track-visit', async (req, res) => {
         classSection: classData.section || '',
         classCreatedDate: classData.createdAt,
         visitsCount: 1,
-        totalVisits: 1,
         lastClassVisit: new Date(),
-        activities: {
+        activities: {                                
           streams: { items: [], count: 0, lastUpdated: new Date() },
           assignments: { items: [], count: 0, lastUpdated: new Date() },
           assessments: { items: [], count: 0, lastUpdated: new Date() }
@@ -91,63 +90,36 @@ router.post('/track-visit', async (req, res) => {
       });
     } else {
       activity.visitsCount = (activity.visitsCount || 0) + 1;
-      activity.totalVisits = (activity.totalVisits || 0) + 1;
       activity.lastClassVisit = new Date();
       if (staffName) activity.staffName = staffName;
       if (staffEmail) activity.staffEmail = staffEmail;
 
-      // Ensure activities object exists
-      if (!activity.activities) {
-        activity.activities = {
-          streams: { items: [], count: 0, lastUpdated: new Date() },
-          assignments: { items: [], count: 0, lastUpdated: new Date() },
-          assessments: { items: [], count: 0, lastUpdated: new Date() }
-        };
-      }
+      activity.activities = activity.activities || {};
+      activity.activities.streams = activity.activities.streams || { items: [], count: 0, lastUpdated: new Date() };
+      activity.activities.assignments = activity.activities.assignments || { items: [], count: 0, lastUpdated: new Date() };
+      activity.activities.assessments = activity.activities.assessments || { items: [], count: 0, lastUpdated: new Date() };
     }
 
     await activity.save();
-    res.json({ success: true, message: 'Visit tracked successfully' });
+    res.json({ success: true });
   } catch (err) {
-    console.error('Error tracking visit:', err);
+    console.error('Error tracking visit:', err.stack);  
     res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });
 
-// TRACK ASSIGNMENT - FIXED
 router.post('/track-assignment', async (req, res) => {
   try {
-    const { 
-      staffId, 
-      staffEmail, 
-      staffName, 
-      classId, 
-      activityType, 
-      itemData = {} 
-    } = req.body;
-    
-    console.log('Tracking assignment:', { staffId, classId, activityType, itemData });
-
-    if (!staffId || !classId) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Staff ID and Class ID are required' 
-      });
+    const { staffId, staffEmail, staffName, classId, activityType, itemData = {} } = req.body;
+    if (!staffId || !classId || !activityType) {
+      return res.status(400).json({ error: 'Staff ID, Class ID, and activityType are required' });
     }
-
     const classData = await Class.findById(classId);
     if (!classData) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Class not found' 
-      });
+      return res.status(404).json({ error: 'Class not found' });
     }
-
     let activity = await StaffActivity.findOne({ staffId, classId });
-    const now = new Date();
-
     if (!activity) {
-      // Create new activity record
       activity = new StaffActivity({
         staffId,
         staffEmail: staffEmail || '',
@@ -158,7 +130,7 @@ router.post('/track-assignment', async (req, res) => {
         classSection: classData.section || '',
         classCreatedDate: classData.createdAt,
         totalAssignments: 1,
-        lastAssignmentUpdate: now,
+        lastAssignmentUpdate: new Date(),
         activities: {
           assignments: {
             items: [{
@@ -166,83 +138,40 @@ router.post('/track-assignment', async (req, res) => {
               title: itemData.title || 'Untitled Assignment',
               type: itemData.type || 'assignment',
               assignmentType: itemData.assignmentType || 'text',
-              createdAt: now,
+              createdAt: new Date(),
             }],
             count: 1,
-            lastUpdated: now
-          },
-          streams: { items: [], count: 0, lastUpdated: now },
-          assessments: { items: [], count: 0, lastUpdated: now }
+            lastUpdated: new Date()
+          }
         }
       });
     } else {
-      // Update existing activity
       activity.totalAssignments = (activity.totalAssignments || 0) + 1;
-      activity.lastAssignmentUpdate = now;
-      
-      // Ensure activities object exists
-      if (!activity.activities) {
-        activity.activities = {
-          assignments: { items: [], count: 0, lastUpdated: now },
-          streams: { items: [], count: 0, lastUpdated: now },
-          assessments: { items: [], count: 0, lastUpdated: now }
-        };
-      }
-      
-      // Ensure assignments object exists
-      if (!activity.activities.assignments) {
-        activity.activities.assignments = { items: [], count: 0, lastUpdated: now };
-      }
-      
-      // Ensure items array exists
-      if (!Array.isArray(activity.activities.assignments.items)) {
-        activity.activities.assignments.items = [];
-      }
-      
-      // Add new assignment item
+      activity.lastAssignmentUpdate = new Date();
+      activity.activities = activity.activities || {};
+      activity.activities.assignments = activity.activities.assignments || {
+        items: [],
+        count: 0,
+        lastUpdated: new Date()
+      };
       activity.activities.assignments.items.push({
         id: itemData.id || new mongoose.Types.ObjectId().toString(),
         title: itemData.title || 'Untitled Assignment',
         type: itemData.type || 'assignment',
         assignmentType: itemData.assignmentType || 'text',
-        createdAt: now,
+        createdAt: new Date(),
       });
-      
-      // Update count and timestamp
       activity.activities.assignments.count = activity.totalAssignments;
-      activity.activities.assignments.lastUpdated = now;
-      
-      // Update staff info if provided
-      if (staffName) activity.staffName = staffName;
-      if (staffEmail) activity.staffEmail = staffEmail;
+      activity.activities.assignments.lastUpdated = new Date();
     }
-
     await activity.save();
-    
-    console.log('Assignment tracked successfully:', {
-      staffId,
-      classId,
-      totalAssignments: activity.totalAssignments
-    });
-    
-    res.json({ 
-      success: true, 
-      message: 'Assignment tracked successfully',
-      data: {
-        totalAssignments: activity.totalAssignments,
-        activityId: activity._id
-      }
-    });
+    res.json({ success: true, message: 'Assignment tracked successfully' });
   } catch (err) {
-    console.error('Error tracking assignment:', err);
-    res.status(500).json({ 
-      success: false,
-      error: 'Failed to track assignment: ' + (err.message || 'Internal server error')
-    });
+    console.error('Error tracking assignment:', err.stack);
+    res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });
 
-// TRACK ASSESSMENT - FIXED
 router.post('/track-assessment', async (req, res) => {
   try {
     const {
@@ -256,27 +185,14 @@ router.post('/track-assessment', async (req, res) => {
       assessmentTitle,
       assessmentId
     } = req.body;
-    
-    console.log('Tracking assessment:', { staffId, classId, assessmentType, assessmentTitle });
-
     if (!staffId || !classId) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Staff ID and Class ID are required' 
-      });
+      return res.status(400).json({ error: 'Staff ID and Class ID are required' });
     }
-
     const classData = await Class.findById(classId);
     if (!classData) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Class not found' 
-      });
+      return res.status(404).json({ error: 'Class not found' });
     }
-
     let activity = await StaffActivity.findOne({ staffId, classId });
-    const now = new Date();
-
     if (!activity) {
       activity = new StaffActivity({
         staffId,
@@ -288,85 +204,30 @@ router.post('/track-assessment', async (req, res) => {
         classSection: classData.section || '',
         classCreatedDate: classData.createdAt,
         totalAssessments: 1,
-        lastAssessmentUpdate: now,
-        activities: {
-          assessments: {
-            items: [{
-              id: assessmentId || new mongoose.Types.ObjectId().toString(),
-              title: assessmentTitle || itemData.title || 'Untitled Assessment',
-              type: assessmentType || itemData.type || 'material',
-              createdAt: now,
-            }],
-            count: 1,
-            lastUpdated: now
-          },
-          assignments: { items: [], count: 0, lastUpdated: now },
-          streams: { items: [], count: 0, lastUpdated: now }
-        }
+        lastAssessmentUpdate: new Date(),
       });
     } else {
       activity.totalAssessments = (activity.totalAssessments || 0) + 1;
-      activity.lastAssessmentUpdate = now;
-      
-      // Ensure activities object exists
-      if (!activity.activities) {
-        activity.activities = {
-          assessments: { items: [], count: 0, lastUpdated: now },
-          assignments: { items: [], count: 0, lastUpdated: now },
-          streams: { items: [], count: 0, lastUpdated: now }
-        };
-      }
-      
-      // Ensure assessments object exists
-      if (!activity.activities.assessments) {
-        activity.activities.assessments = { items: [], count: 0, lastUpdated: now };
-      }
-      
-      // Ensure items array exists
-      if (!Array.isArray(activity.activities.assessments.items)) {
-        activity.activities.assessments.items = [];
-      }
-      
-      activity.activities.assessments.items.push({
-        id: assessmentId || new mongoose.Types.ObjectId().toString(),
-        title: assessmentTitle || itemData.title || 'Untitled Assessment',
-        type: assessmentType || itemData.type || 'material',
-        createdAt: now,
-      });
-      
-      activity.activities.assessments.count = activity.totalAssessments;
-      activity.activities.assessments.lastUpdated = now;
-      
-      if (staffName) activity.staffName = staffName;
-      if (staffEmail) activity.staffEmail = staffEmail;
+      activity.lastAssessmentUpdate = new Date();
     }
-
+    activity.activities = activity.activities || {};
+    activity.activities.assessments = activity.activities.assessments || { items: [], count: 0, lastUpdated: new Date() };
+    activity.activities.assessments.items.push({
+      id: assessmentId || new mongoose.Types.ObjectId().toString(),
+      title: assessmentTitle || itemData.title || 'Untitled Assessment',
+      type: assessmentType || itemData.type || 'material',
+      createdAt: new Date(),
+    });
+    activity.activities.assessments.count = activity.totalAssessments;
+    activity.activities.assessments.lastUpdated = new Date();
     await activity.save();
-    
-    console.log('Assessment tracked successfully:', {
-      staffId,
-      classId,
-      totalAssessments: activity.totalAssessments
-    });
-    
-    res.json({ 
-      success: true,
-      message: 'Assessment tracked successfully',
-      data: {
-        totalAssessments: activity.totalAssessments,
-        activityId: activity._id
-      }
-    });
+    res.json({ success: true });
   } catch (err) {
     console.error('Error tracking assessment:', err);
-    res.status(500).json({ 
-      success: false,
-      error: err.message || 'Internal server error' 
-    });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// TRACK STREAM - FIXED
 router.post('/track-stream', async (req, res) => {
   try {
     const { 
@@ -381,13 +242,8 @@ router.post('/track-stream', async (req, res) => {
       duration 
     } = req.body;
 
-    console.log('Tracking stream:', { staffId, classId, meetingId, meetingTitle });
-
     if (!staffId || !meetingId) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Staff ID and meeting ID are required' 
-      });
+      return res.status(400).json({ error: 'Staff ID and meeting ID are required' });
     }
 
     let classData = null;
@@ -406,7 +262,6 @@ router.post('/track-stream', async (req, res) => {
       staffId, 
       classId: classId || null 
     });
-    const now = new Date();
 
     if (!activity) {
       activity = new StaffActivity({
@@ -417,119 +272,68 @@ router.post('/track-stream', async (req, res) => {
         className,
         classSubject: subject,
         classSection: section,
-        classCreatedDate: classData ? classData.createdAt : now,
+        classCreatedDate: classData ? classData.createdAt : new Date(),
         totalStreams: 1,
-        lastStreamUpdate: now,
-        activities: {
+        lastStreamUpdate: new Date(),
+        activities: {                           // ← FIXED: initialize here
           streams: {
-            items: [{
-              id: meetingId,
-              title: meetingTitle || 'Untitled Meeting/Stream',
-              type: meetingType,
-              scheduledTime: scheduledTime || now,
-              duration: duration || 60,
-              createdAt: now,
-            }],
+            items: [],
             count: 1,
-            lastUpdated: now
-          },
-          assignments: { items: [], count: 0, lastUpdated: now },
-          assessments: { items: [], count: 0, lastUpdated: now }
+            lastUpdated: new Date()
+          }
         }
       });
     } else {
       activity.totalStreams = (activity.totalStreams || 0) + 1;
-      activity.lastStreamUpdate = now;
-      
+      activity.lastStreamUpdate = new Date();
       if (staffName) activity.staffName = staffName;
       if (staffEmail) activity.staffEmail = staffEmail;
 
       // Ensure activities object exists
-      if (!activity.activities) {
-        activity.activities = {
-          streams: { items: [], count: 0, lastUpdated: now },
-          assignments: { items: [], count: 0, lastUpdated: now },
-          assessments: { items: [], count: 0, lastUpdated: now }
-        };
-      }
-      
-      // Ensure streams object exists
-      if (!activity.activities.streams) {
-        activity.activities.streams = {
-          items: [],
-          count: 0,
-          lastUpdated: now
-        };
-      }
-      
-      // Ensure items array exists
-      if (!Array.isArray(activity.activities.streams.items)) {
-        activity.activities.streams.items = [];
-      }
+      activity.activities = activity.activities || {};
+      activity.activities.streams = activity.activities.streams || {
+        items: [],
+        count: 0,
+        lastUpdated: new Date()
+      };
 
-      activity.activities.streams.items.push({
-        id: meetingId,
-        title: meetingTitle || 'Untitled Meeting/Stream',
-        type: meetingType,
-        scheduledTime: scheduledTime || now,
-        duration: duration || 60,
-        createdAt: now,
-      });
-      
-      activity.activities.streams.count = activity.totalStreams;
-      activity.activities.streams.lastUpdated = now;
+      activity.activities.streams.count += 1;
+      activity.activities.streams.lastUpdated = new Date();
     }
+
+    activity.activities.streams.items.push({
+      id: meetingId,
+      title: meetingTitle || 'Untitled Meeting/Stream',
+      type: meetingType,
+      scheduledTime: scheduledTime || new Date(),
+      duration: duration || 60,
+      createdAt: new Date(),
+    });
 
     await activity.save();
 
-    console.log('Stream tracked successfully:', {
-      staffId,
-      classId,
-      totalStreams: activity.totalStreams
-    });
-    
     res.json({ 
       success: true, 
       message: 'Stream/Meeting tracked successfully',
-      data: {
-        streamCount: activity.totalStreams,
-        activityId: activity._id
-      }
+      streamCount: activity.totalStreams 
     });
   } catch (err) {
     console.error('Error tracking stream:', err);
-    res.status(500).json({ 
-      success: false,
-      error: err.message 
-    });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// UPDATE ACTIVITY - FIXED
 router.post('/update-activity', async (req, res) => {
   try {
     const { staffId, staffEmail, staffName, classId, activityType, itemData = {} } = req.body;
-    
-    console.log('Updating activity:', { staffId, classId, activityType });
-
     if (!staffId || !classId || !activityType) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Staff ID, Class ID, and activityType are required' 
-      });
+      return res.status(400).json({ error: 'Staff ID, Class ID, and activityType are required' });
     }
-    
     const classData = await Class.findById(classId);
     if (!classData) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Class not found' 
-      });
+      return res.status(404).json({ error: 'Class not found' });
     }
-    
     let activity = await StaffActivity.findOne({ staffId, classId });
-    const now = new Date();
-    
     if (!activity) {
       activity = new StaffActivity({
         staffId,
@@ -540,153 +344,73 @@ router.post('/update-activity', async (req, res) => {
         classSubject: classData.subject || '',
         classSection: classData.section || '',
         classCreatedDate: classData.createdAt,
-        lastActivityUpdate: now,
+        lastActivityUpdate: new Date(),
       });
-      
-      // Initialize activities object
-      activity.activities = {
-        assignments: { items: [], count: 0, lastUpdated: now },
-        assessments: { items: [], count: 0, lastUpdated: now },
-        streams: { items: [], count: 0, lastUpdated: now }
-      };
     } else {
-      activity.lastActivityUpdate = now;
+      activity.lastActivityUpdate = new Date();
       if (staffEmail) activity.staffEmail = staffEmail;
       if (staffName) activity.staffName = staffName;
-      
-      // Ensure activities object exists
-      if (!activity.activities) {
-        activity.activities = {
-          assignments: { items: [], count: 0, lastUpdated: now },
-          assessments: { items: [], count: 0, lastUpdated: now },
-          streams: { items: [], count: 0, lastUpdated: now }
-        };
-      }
     }
-    
-    // Handle different activity types
+    activity.activities = activity.activities || {};
+    const now = new Date();
     switch (activityType) {
       case 'assessments':
         activity.totalAssessments = (activity.totalAssessments || 0) + 1;
         activity.lastAssessmentUpdate = now;
-        
-        if (!activity.activities.assessments) {
-          activity.activities.assessments = { items: [], count: 0, lastUpdated: now };
-        }
-        
-        if (!Array.isArray(activity.activities.assessments.items)) {
-          activity.activities.assessments.items = [];
-        }
-        
+        activity.activities.assessments = activity.activities.assessments || { items: [], count: 0, lastUpdated: now };
         activity.activities.assessments.items.push({
           id: itemData.id || new mongoose.Types.ObjectId().toString(),
           title: itemData.title || 'Untitled Assessment',
           type: itemData.type || 'material',
           createdAt: now,
         });
-        
         activity.activities.assessments.count = activity.totalAssessments;
         activity.activities.assessments.lastUpdated = now;
         break;
-        
       case 'assignments':
         activity.totalAssignments = (activity.totalAssignments || 0) + 1;
         activity.lastAssignmentUpdate = now;
-        
-        if (!activity.activities.assignments) {
-          activity.activities.assignments = { items: [], count: 0, lastUpdated: now };
-        }
-        
-        if (!Array.isArray(activity.activities.assignments.items)) {
-          activity.activities.assignments.items = [];
-        }
-        
+        activity.activities.assignments = activity.activities.assignments || { items: [], count: 0, lastUpdated: now };
         activity.activities.assignments.items.push({
           id: itemData.id || new mongoose.Types.ObjectId().toString(),
           title: itemData.title || 'Untitled Assignment',
           type: itemData.type || 'assignment',
           createdAt: now,
         });
-        
         activity.activities.assignments.count = activity.totalAssignments;
         activity.activities.assignments.lastUpdated = now;
         break;
-        
       case 'streams':
         activity.totalStreams = (activity.totalStreams || 0) + 1;
         activity.lastStreamUpdate = now;
-        
-        if (!activity.activities.streams) {
-          activity.activities.streams = { items: [], count: 0, lastUpdated: now };
-        }
-        
-        if (!Array.isArray(activity.activities.streams.items)) {
-          activity.activities.streams.items = [];
-        }
-        
+        activity.activities.streams = activity.activities.streams || { items: [], count: 0, lastUpdated: now };
         activity.activities.streams.items.push({
           id: itemData.id || new mongoose.Types.ObjectId().toString(),
           title: itemData.title || 'Untitled Stream',
           type: itemData.type || 'stream',
           createdAt: now,
         });
-        
         activity.activities.streams.count = activity.totalStreams;
         activity.activities.streams.lastUpdated = now;
         break;
-        
       default:
-        return res.status(400).json({ 
-          success: false,
-          error: 'Invalid activityType' 
-        });
+        return res.status(400).json({ error: 'Invalid activityType' });
     }
-    
     await activity.save();
-    
-    console.log('Activity updated successfully:', {
-      staffId,
-      classId,
-      activityType,
-      counts: {
-        assignments: activity.totalAssignments,
-        assessments: activity.totalAssessments,
-        streams: activity.totalStreams
-      }
-    });
-    
-    res.json({ 
-      success: true,
-      message: 'Activity updated successfully',
-      data: {
-        assignments: activity.totalAssignments,
-        assessments: activity.totalAssessments,
-        streams: activity.totalStreams,
-        activityId: activity._id
-      }
-    });
+    res.json({ success: true });
   } catch (err) {
     console.error('Error updating activity:', err);
-    res.status(500).json({ 
-      success: false,
-      error: err.message 
-    });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// GET STAFF TIMELINE - FIXED
 router.get('/staff/:staffId/timeline', async (req, res) => {
   try {
     const { staffId } = req.params;
     const { startDate, endDate } = req.query;
-    
-    console.log('Fetching timeline for staff:', staffId);
-
     let staffIdentifier = staffId;
     let staffEmail = staffId;
     let staff = null;
-    
-    // Try to find staff by email or staffId
     if (staffId.includes('@')) {
       staff = await Staff.findOne({ email: staffId.toLowerCase() });
       if (staff) {
@@ -699,15 +423,12 @@ router.get('/staff/:staffId/timeline', async (req, res) => {
         staffEmail = staff.email;
       }
     }
-    
     if (!staff) {
       return res.status(404).json({
         success: false,
         error: 'Staff not found'
       });
     }
-    
-    // Build date filter
     let dateFilter = {};
     if (startDate) {
       dateFilter.createdAt = dateFilter.createdAt || {};
@@ -717,8 +438,6 @@ router.get('/staff/:staffId/timeline', async (req, res) => {
       dateFilter.createdAt = dateFilter.createdAt || {};
       dateFilter.createdAt.$lte = new Date(endDate);
     }
-    
-    // Get staff activities
     const staffActivities = await StaffActivity.find({
       $or: [
         { staffId: staffIdentifier },
@@ -726,8 +445,6 @@ router.get('/staff/:staffId/timeline', async (req, res) => {
       ],
       ...dateFilter
     });
-    
-    // Get meetings
     const meetingsQuery = {
       $or: [
         { createdBy: staff._id.toString() },
@@ -736,40 +453,31 @@ router.get('/staff/:staffId/timeline', async (req, res) => {
       ],
       ...dateFilter
     };
-    
     const meetings = await Meeting.find(meetingsQuery);
-    
-    // Calculate totals
     let totalAssignments = 0;
     let totalAssessments = 0;
     let totalVisits = 0;
     let totalClasses = 0;
-    
     staffActivities.forEach(activity => {
       totalAssignments += activity.totalAssignments || 0;
       totalAssessments += activity.totalAssessments || 0;
       totalVisits += activity.visitsCount || 0;
       if (activity.classId) totalClasses++;
     });
-    
     const totalStreams = meetings.length;
-    
-    // Build class breakdown
     const classBreakdown = [];
-    
     for (const activity of staffActivities) {
       if (activity.classId) {
         const classData = await Class.findById(activity.classId);
         if (classData) {
           const cidStr = activity.classId.toString();
           let entry = classBreakdown.find(e => e.classId.toString() === cidStr);
-          
           if (!entry) {
             entry = {
               classId: activity.classId,
               className: classData.name || activity.className || 'Unknown Class',
-              subject: classData.subject || activity.classSubject || 'N/A',
-              section: classData.section || activity.classSection || 'N/A',
+              subject: classData.subject || activity.classSubject || activity.subject || 'N/A',
+              section: classData.section || activity.classSection || activity.section || 'N/A',
               streams: 0,
               assignments: 0,
               assessments: 0,
@@ -777,15 +485,12 @@ router.get('/staff/:staffId/timeline', async (req, res) => {
             };
             classBreakdown.push(entry);
           }
-          
           entry.assignments += activity.totalAssignments || 0;
           entry.assessments += activity.totalAssessments || 0;
           entry.visits += activity.visitsCount || 0;
         }
       }
     }
-    
-    // Add streams to class breakdown
     const meetingsByClass = await Meeting.aggregate([
       {
         $match: {
@@ -805,11 +510,9 @@ router.get('/staff/:staffId/timeline', async (req, res) => {
         }
       }
     ]);
-    
     for (const m of meetingsByClass) {
       const cidStr = m._id.toString();
       let entry = classBreakdown.find(e => e.classId.toString() === cidStr);
-      
       if (entry) {
         entry.streams = m.count;
       } else {
@@ -828,18 +531,10 @@ router.get('/staff/:staffId/timeline', async (req, res) => {
         }
       }
     }
-    
-    // Sort class breakdown by total activity
     classBreakdown.sort((a, b) =>
       (b.streams + b.assignments + b.assessments + b.visits) -
       (a.streams + a.assignments + a.assessments + a.visits)
     );
-    
-    console.log('Timeline fetched successfully:', {
-      staffId: staffIdentifier,
-      totalActivities: staffActivities.length + meetings.length
-    });
-    
     res.status(200).json({
       success: true,
       summary: {
@@ -887,54 +582,22 @@ router.get('/staff/:staffId/timeline', async (req, res) => {
   }
 });
 
-// ANALYZE EXISTING CONTENT - FIXED
 router.post('/analyze-existing/:staffId/:classId', async (req, res) => {
   try {
     const { staffId, classId } = req.params;
-    
-    console.log('Analyzing existing content:', { staffId, classId });
-
     if (!mongoose.Types.ObjectId.isValid(classId)) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Invalid class ID' 
-      });
+      return res.status(400).json({ error: 'Invalid class ID' });
     }
-    
     const staff = await Staff.findOne({ staffId });
     if (!staff) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Staff not found' 
-      });
+      return res.status(404).json({ error: 'Staff not found' });
     }
-    
     const classData = await Class.findById(classId);
     if (!classData) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Class not found' 
-      });
+      return res.status(404).json({ error: 'Class not found' });
     }
-    
-    // Count units
-    const unitsCount = await Unit.countDocuments({ 
-      classId, 
-      $or: [
-        { createdBy: staffId },
-        { createdByEmail: staff.email }
-      ]
-    });
-    
-    const units = await Unit.find({ 
-      classId, 
-      $or: [
-        { createdBy: staffId },
-        { createdByEmail: staff.email }
-      ]
-    }).select('title createdAt description');
-    
-    // Count meetings
+    const unitsCount = await Unit.countDocuments({ classId, createdBy: staffId });
+    const units = await Unit.find({ classId, createdBy: staffId }).select('title createdAt description');
     const meetingsCount = await Meeting.countDocuments({
       classId,
       $or: [
@@ -943,10 +606,8 @@ router.post('/analyze-existing/:staffId/:classId', async (req, res) => {
         { 'staffInfo.email': staff.email.toLowerCase() }
       ]
     });
-    
     let activity = await StaffActivity.findOne({ staffId, classId });
     const now = new Date();
-    
     if (!activity) {
       activity = new StaffActivity({
         staffId,
@@ -959,19 +620,8 @@ router.post('/analyze-existing/:staffId/:classId', async (req, res) => {
         classCreatedDate: classData.createdAt,
       });
     }
-    
-    // Update assessments from units
     activity.totalAssessments = unitsCount;
-    
-    // Ensure activities object exists
-    if (!activity.activities) {
-      activity.activities = {
-        assessments: { items: [], count: 0, lastUpdated: now },
-        assignments: { items: [], count: 0, lastUpdated: now },
-        streams: { items: [], count: 0, lastUpdated: now }
-      };
-    }
-    
+    activity.activities = activity.activities || {};
     activity.activities.assessments = {
       count: unitsCount,
       lastUpdated: now,
@@ -983,37 +633,19 @@ router.post('/analyze-existing/:staffId/:classId', async (req, res) => {
         description: u.description || ''
       }))
     };
-    
-    // Update streams from meetings
     activity.totalStreams = meetingsCount;
-    
-    if (!activity.activities.streams) {
-      activity.activities.streams = {
-        count: meetingsCount,
-        lastUpdated: now,
-        items: []
-      };
-    } else {
-      activity.activities.streams.count = meetingsCount;
-      activity.activities.streams.lastUpdated = now;
-    }
-    
+    activity.activities.streams = activity.activities.streams || {
+      count: meetingsCount,
+      lastUpdated: now,
+      items: []
+    };
     activity.isHistoricalData = true;
     activity.notes = `Historical data: ${unitsCount} units (assessments) and ${meetingsCount} streams found`;
-    
     await activity.save();
-    
-    console.log('Existing content analyzed successfully:', {
-      staffId,
-      classId,
-      unitsCount,
-      meetingsCount
-    });
-    
     res.status(200).json({
       success: true,
       message: 'Existing content analyzed successfully',
-      data: {
+      activity: {
         id: activity._id,
         staffId: activity.staffId,
         className: activity.className,
@@ -1032,7 +664,6 @@ router.post('/analyze-existing/:staffId/:classId', async (req, res) => {
   }
 });
 
-// MANUAL UPDATE - FIXED
 router.post('/manual-update', async (req, res) => {
   try {
     const { 
@@ -1044,16 +675,12 @@ router.post('/manual-update', async (req, res) => {
       notes = '',
       isHistorical = false 
     } = req.body;
-    
-    console.log('Manual update:', { staffId, classId, streams, assignments, assessments });
-
     if (!staffId || !classId) {
       return res.status(400).json({
         success: false,
         error: 'Staff ID and Class ID are required'
       });
     }
-    
     const classData = await Class.findById(classId);
     if (!classData) {
       return res.status(404).json({
@@ -1061,28 +688,23 @@ router.post('/manual-update', async (req, res) => {
         error: 'Class not found'
       });
     }
-    
     const staff = await Staff.findOne({ 
       $or: [
         { staffId: staffId },
         { email: staffId }
       ]
     });
-    
     if (!staff) {
       return res.status(404).json({
         success: false,
         error: 'Staff not found'
       });
     }
-    
     let activity = await StaffActivity.findOne({
       staffId: staff.staffId,
       classId
     });
-    
     const now = new Date();
-    
     if (!activity) {
       activity = new StaffActivity({
         staffId: staff.staffId,
@@ -1122,46 +744,23 @@ router.post('/manual-update', async (req, res) => {
       const oldStreams = activity.totalStreams;
       const oldAssignments = activity.totalAssignments;
       const oldAssessments = activity.totalAssessments;
-      
       activity.totalStreams = streams;
       activity.totalAssignments = assignments;
       activity.totalAssessments = assessments;
-      
-      // Ensure activities object exists
-      if (!activity.activities) {
-        activity.activities = {
-          streams: { count: streams, lastUpdated: now, items: [] },
-          assignments: { count: assignments, lastUpdated: now, items: [] },
-          assessments: { count: assessments, lastUpdated: now, items: [] }
-        };
-      }
-      
       activity.activities.streams.count = streams;
       activity.activities.assignments.count = assignments;
       activity.activities.assessments.count = assessments;
-      
       activity.activities.streams.lastUpdated = now;
       activity.activities.assignments.lastUpdated = now;
       activity.activities.assessments.lastUpdated = now;
-      
       activity.isHistoricalData = isHistorical;
       activity.notes = notes || `Updated from ${oldStreams}/${oldAssignments}/${oldAssessments} to ${streams}/${assignments}/${assessments}`;
     }
-    
     await activity.save();
-    
-    console.log('Manual update successful:', {
-      staffId: staff.staffId,
-      classId,
-      streams,
-      assignments,
-      assessments
-    });
-    
     res.status(200).json({
       success: true,
       message: 'Activity counts updated successfully',
-      data: {
+      activity: {
         id: activity._id,
         staffId: activity.staffId,
         className: activity.className,
@@ -1181,24 +780,16 @@ router.post('/manual-update', async (req, res) => {
   }
 });
 
-// DELETE ACTIVITY - FIXED
 router.delete('/:id', validateObjectId, async (req, res) => {
   try {
     const { id } = req.params;
-    
-    console.log('Deleting activity:', id);
-    
     const deleted = await StaffActivity.findByIdAndDelete(id);
-    
     if (!deleted) {
       return res.status(404).json({
         success: false,
         error: 'Activity record not found'
       });
     }
-    
-    console.log('Activity deleted successfully:', id);
-    
     res.status(200).json({
       success: true,
       message: 'Activity record deleted successfully',
@@ -1213,110 +804,25 @@ router.delete('/:id', validateObjectId, async (req, res) => {
   }
 });
 
-// GET ACTIVITY BY ID - FIXED
 router.get('/:id', validateObjectId, async (req, res) => {
   try {
     const { id } = req.params;
-    
-    console.log('Fetching activity:', id);
-    
     const activity = await StaffActivity.findById(id);
-    
     if (!activity) {
       return res.status(404).json({
         success: false,
         error: 'Activity not found'
       });
     }
-    
-    console.log('Activity fetched successfully:', id);
-    
     res.status(200).json({
       success: true,
-      data: activity
+      activity
     });
   } catch (error) {
     console.error('Error fetching activity:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to fetch activity: ' + error.message
-    });
-  }
-});
-
-// GET ALL ACTIVITIES
-router.get('/', async (req, res) => {
-  try {
-    console.log('Fetching all activities');
-    
-    const activities = await StaffActivity.find({});
-    
-    console.log('Fetched', activities.length, 'activities');
-    
-    res.status(200).json({
-      success: true,
-      data: activities,
-      count: activities.length
-    });
-  } catch (error) {
-    console.error('Error fetching all activities:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch activities: ' + error.message
-    });
-  }
-});
-
-// GET SUMMARY FOR STAFF
-router.get('/summary/:staffId', async (req, res) => {
-  try {
-    const { staffId } = req.params;
-    
-    console.log('Fetching summary for staff:', staffId);
-    
-    const activities = await StaffActivity.find({
-      $or: [
-        { staffId: staffId },
-        { staffEmail: staffId }
-      ]
-    });
-    
-    let totalStreams = 0;
-    let totalAssignments = 0;
-    let totalAssessments = 0;
-    let totalVisits = 0;
-    
-    activities.forEach(activity => {
-      totalStreams += activity.totalStreams || 0;
-      totalAssignments += activity.totalAssignments || 0;
-      totalAssessments += activity.totalAssessments || 0;
-      totalVisits += activity.visitsCount || 0;
-    });
-    
-    console.log('Summary fetched successfully:', {
-      staffId,
-      totalStreams,
-      totalAssignments,
-      totalAssessments,
-      totalVisits
-    });
-    
-    res.status(200).json({
-      success: true,
-      data: {
-        staffId,
-        totalStreams,
-        totalAssignments,
-        totalAssessments,
-        totalVisits,
-        totalClasses: activities.length
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching summary:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch summary: ' + error.message
     });
   }
 });
