@@ -25,6 +25,24 @@ router.post('/api/ebooks', async (req, res) => {
       });
     }
 
+    // Check for duplicate fileName
+    const existingEbookByName = await Ebook.findOne({ fileName });
+    if (existingEbookByName) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'An e-book with this name already exists' 
+      });
+    }
+
+    // Check for duplicate fileLink
+    const existingEbookByLink = await Ebook.findOne({ fileLink });
+    if (existingEbookByLink) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'An e-book with this link already exists' 
+      });
+    }
+
     const newEbook = new Ebook({
       fileName,
       fileLink
@@ -37,6 +55,7 @@ router.post('/api/ebooks', async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to add ebook' });
   }
 });
+
 // Update ebook (Admin only)
 router.put('/api/ebooks/:id', async (req, res) => {
   try {
@@ -46,6 +65,30 @@ router.put('/api/ebooks/:id', async (req, res) => {
       return res.status(400).json({ 
         success: false, 
         error: 'File name and file link are required' 
+      });
+    }
+
+    // Check for duplicate fileName (excluding current ebook)
+    const existingEbookByName = await Ebook.findOne({ 
+      fileName, 
+      _id: { $ne: req.params.id } 
+    });
+    if (existingEbookByName) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'An e-book with this name already exists' 
+      });
+    }
+
+    // Check for duplicate fileLink (excluding current ebook)
+    const existingEbookByLink = await Ebook.findOne({ 
+      fileLink, 
+      _id: { $ne: req.params.id } 
+    });
+    if (existingEbookByLink) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'An e-book with this link already exists' 
       });
     }
 
