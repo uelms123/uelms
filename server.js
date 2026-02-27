@@ -1,35 +1,23 @@
+// server.js
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const dotenv = require('dotenv');
 const path = require('path');
 const fs = require('fs');
 const admin = require('firebase-admin');
-require('dotenv').config();
 
-const classRoutes = require('./routes/classRoutes');
-const announcementRoutes = require('./routes/announcementRoutes');
-const unitRoutes = require('./routes/unitRoutes');
-const assignmentRoutes = require('./routes/assignments');
-const submissionRoutes = require('./routes/submissions');
-const staffRoutes = require('./routes/staffRoutes');
-const studentRoutes = require('./routes/studentRoutes');
-const messageRoutes = require('./routes/messages');
-const studLogin = require('./routes/activityRoutes');
-const meetingRoutes = require('./routes/meetings');
-const programRoutes = require('./routes/programRoutes');
-const staffActivityRoutes = require('./routes/staffActivityRoutes');
-const googleMeetAttendanceRoutes = require('./routes/googleMeetAttendance');
-const staffMeetingsRoutes = require('./routes/staffMeetings');
-const ebookRoutes = require('./routes/ebookRoutes');
+// Load environment variables
+dotenv.config();
 
-require('./models/files');
-require('./models/unit');
-require('./models/DailyUpload');
-const Staff = require('./models/Staff');
-const Student = require('./models/Students');
-const Class = require('./models/Class');
-const StaffActivity = require('./models/StaffActivity');
+const app = express();
 
+// At the very top of server.js, after requires
+const dns = require('dns');
+dns.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']); // Google + Cloudflare DNS
+// ============================================
+// FIREBASE INITIALIZATION (from second file)
+// ============================================
 const firebaseConfig = {
   projectId: process.env.FIREBASE_PROJECT_ID,
   clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
@@ -50,17 +38,25 @@ admin.initializeApp({
 
 const bucket = admin.storage().bucket();
 
-const app = express();
-const port = process.env.PORT || 5000;
+// ============================================
+// DIRECTORY CREATION (merged from both files)
+// ============================================
 
-// Create temp directory for file uploads
+// Ensure uploads directory exists (from first file)
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+  console.log('📁 Uploads directory created');
+}
+
+// Create temp directory for file uploads (from second file)
 const tempDir = path.join(__dirname, 'temp_uploads');
 if (!fs.existsSync(tempDir)) {
   fs.mkdirSync(tempDir, { recursive: true });
   console.log('Created temp uploads directory:', tempDir);
 }
 
-// Clean up temp files periodically
+// Clean up temp files periodically (from second file)
 setInterval(() => {
   if (fs.existsSync(tempDir)) {
     fs.readdir(tempDir, (err, files) => {
@@ -80,40 +76,175 @@ setInterval(() => {
   }
 }, 3600000); // Run every hour
 
-// Increase payload size limits
-app.use(express.urlencoded({ extended: true, limit: '10gb' }));
-app.use(express.json({ limit: '10gb' }));
+// ============================================
+// MIDDLEWARE CONFIGURATION (merged from both files)
+// ============================================
 
+// CORS configuration (merged from both files)
+// CORS configuration (merged from both files)
 app.use(cors({
   origin: [
-    'https://uelms.com',
-    'http://localhost:3000',
-    'http://127.0.0.1:3000'
+    'http://localhost:3000', 
+    'http://localhost:5000', 
+    'http://127.0.0.1:3000', 
+    'https://plagiarism-checker-olive.vercel.app', 
+    'https://uelms.com'
   ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
-  credentials: true
+  methods: ['GET', 'POST', 'DELETE', 'PUT', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With', 
+    'Accept',
+    'x-user-id',           // Add this
+    'x-user-email'         // Add this
+  ],
+  exposedHeaders: ['Content-Disposition'], // Add this for file downloads
+  credentials: true,
+  optionsSuccessStatus: 200
 }));
 
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-app.use('/uploads', express.static(uploadsDir));
+// Body parsing middleware (merged from both files - using higher limits)
+app.use(express.json({ limit: '10gb' }));
+app.use(express.urlencoded({ extended: true, limit: '10gb' }));
 
+// Static files (from both files)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// ============================================
+// REQUEST LOGGING MIDDLEWARE (from first file, enhanced)
+// ============================================
+app.use((req, res, next) => {
+  console.log(`📡 ${req.method} ${req.url} - ${new Date().toISOString()}`);
+  
+  // Set timeout for long requests (plagiarism checks)
+  req.setTimeout(1800000, () => { // 30 minutes
+    console.error(`⏰ Request timeout: ${req.method} ${req.url}`);
+  });
+  
+  // Response timeout
+  res.setTimeout(1800000, () => { // 30 minutes
+    console.error(`⏰ Response timeout: ${req.method} ${req.url}`);
+    if (!res.headersSent) {
+      res.status(504).json({ 
+        success: false, 
+        message: 'Request timeout - The operation is taking longer than expected. Please try again.' 
+      });
+    }
+  });
+  
+  next();
+});
+
+// Simple logging middleware (from second file)
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.path}`);
   next();
 });
 
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => {
-    console.log('Connected to MongoDB');
-  })
-  .catch((err) => {
-    console.error('MongoDB connection error:', err);
-  });
+// ============================================
+// MONGODB CONNECTION (merged from both files)
+// ============================================
 
+// MongoDB Connection with options (from first file)
+const mongooseOptions = {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 1800000, // 30 minutes
+  family: 4
+};
+
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(
+      process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://localhost:27017/plagiarism-detector',
+      mongooseOptions
+    );
+
+    console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
+    
+    // Create indexes (from first file)
+    await conn.connection.db.collection('reports').createIndex({ createdAt: -1 });
+    await conn.connection.db.collection('reports').createIndex({ fileName: 1 });
+    console.log('📊 Database indexes created');
+    
+  } catch (error) {
+    console.error('❌ MongoDB Connection Error:', error.message);
+    console.log('⚠️  Make sure MongoDB is running on your system');
+    setTimeout(connectDB, 5000);
+  }
+};
+
+connectDB();
+
+// MongoDB listeners (from first file)
+mongoose.connection.on('error', err => {
+  console.error('❌ MongoDB connection error:', err);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.log('⚠️  MongoDB disconnected, attempting to reconnect...');
+  setTimeout(connectDB, 5000);
+});
+
+// ============================================
+// ROUTE IMPORTS (from second file)
+// ============================================
+const classRoutes = require('./routes/classRoutes');
+const announcementRoutes = require('./routes/announcementRoutes');
+const unitRoutes = require('./routes/unitRoutes');
+const assignmentRoutes = require('./routes/assignments');
+const submissionRoutes = require('./routes/submissions');
+const staffRoutes = require('./routes/staffRoutes');
+const studentRoutes = require('./routes/studentRoutes');
+const messageRoutes = require('./routes/messages');
+const studLogin = require('./routes/activityRoutes');
+const meetingRoutes = require('./routes/meetings');
+const programRoutes = require('./routes/programRoutes');
+const staffActivityRoutes = require('./routes/staffActivityRoutes');
+const googleMeetAttendanceRoutes = require('./routes/googleMeetAttendance');
+const staffMeetingsRoutes = require('./routes/staffMeetings');
+const ebookRoutes = require('./routes/ebookRoutes');
+
+// Model imports (from second file)
+require('./models/files');
+require('./models/unit');
+require('./models/DailyUpload');
+const Staff = require('./models/Staff');
+const Student = require('./models/Students');
+const Class = require('./models/Class');
+const StaffActivity = require('./models/StaffActivity');
+
+// ============================================
+// API ROUTES (from first file - plagiarism detector)
+// ============================================
+// ============================================
+// API ROUTES (from first file - plagiarism detector)
+// ============================================
+try {
+  // Add middleware to extract user info from headers for plagiarism routes
+  app.use('/api/plagiarism', (req, res, next) => {
+    // Extract user info from headers or query
+    const userId = req.headers['x-user-id'] || req.query.userId;
+    const userEmail = req.headers['x-user-email'] || req.query.userEmail;
+    
+    if (userId) req.userId = userId;
+    if (userEmail) req.userEmail = userEmail;
+    
+    next();
+  });
+  
+  app.use('/api/plagiarism', require('./routes/plagiarismRoutes'));
+  app.use('/api/reports', require('./routes/reportRoutes'));
+  console.log('✅ Plagiarism routes loaded successfully (with user history support)');
+} catch (error) {
+  console.error('❌ Error loading plagiarism routes:', error.message);
+}
+
+// ============================================
+// API ROUTES (from second file - LMS)
+// ============================================
 app.use('/api/classes', classRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/units', unitRoutes);
@@ -129,6 +260,125 @@ app.use('/api/staff-activity', staffActivityRoutes);
 app.use('/api/google-meet', require('./routes/googleMeetAttendance'));
 app.use('/api/staff-meetings', staffMeetingsRoutes);
 app.use(ebookRoutes); 
+
+// ============================================
+// API STATUS ENDPOINTS (from first file)
+// ============================================
+
+// API Key status endpoint
+app.get('/api/status', (req, res) => {
+  const apiStatus = {
+    google: {
+      enabled: !!(process.env.GOOGLE_API_KEY && process.env.GOOGLE_CX),
+      keyPresent: !!process.env.GOOGLE_API_KEY,
+      cxPresent: !!process.env.GOOGLE_CX
+    },
+    serpapi: {
+      enabled: !!process.env.SERPAPI_KEY,
+      keyPresent: !!process.env.SERPAPI_KEY
+    },
+    core: {
+      enabled: !!process.env.CORE_API_KEY,
+      keyPresent: !!process.env.CORE_API_KEY
+    },
+    crossref: {
+      enabled: !!process.env.CROSSREF_EMAIL,
+      emailPresent: !!process.env.CROSSREF_EMAIL
+    }
+  };
+  
+  res.json({
+    success: true,
+    message: 'API Status',
+    server: {
+      status: 'running',
+      port: process.env.PORT || 5000,
+      environment: process.env.NODE_ENV || 'development'
+    },
+    apis: apiStatus,
+    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    timestamp: new Date()
+  });
+});
+
+// Health check (from first file - enhanced)
+app.get('/health', (req, res) => {
+  res.json({ 
+    success: true,
+    message: 'Plagiarism Detector API Running ✅', 
+    status: 'OK', 
+    timestamp: new Date(),
+    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    uptime: process.uptime(),
+    memory: process.memoryUsage()
+  });
+});
+
+// Health check (from second file)
+app.get('/api/health', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Server is running',
+    timestamp: new Date().toISOString(),
+    services: {
+      mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      firebase: 'initialized'
+    }
+  });
+});
+
+// Root endpoint (from first file - enhanced)
+app.get('/', (req, res) => {
+  res.json({ 
+    success: true,
+    message: '📚 Combined API Server', 
+    version: '2.0.0',
+    endpoints: {
+      // Plagiarism detector endpoints
+      plagiarism: {
+        health: '/health',
+        status: '/api/status',
+        checkFile: '/api/plagiarism/check-file (POST)',
+        checkText: '/api/plagiarism/check-text (POST)',
+        history: '/api/plagiarism/history (GET)',
+        report: '/api/plagiarism/report/:id (GET)',
+        reports: '/api/reports (GET)',
+        download: '/api/reports/download/:id (GET)',
+        delete: '/api/reports/:id (DELETE)'
+      },
+      // LMS endpoints
+      lms: {
+        classes: '/api/classes',
+        announcements: '/api/announcements',
+        units: '/api/units',
+        assignments: '/api/assignments',
+        submissions: '/api/submissions',
+        staff: '/api/staff',
+        students: '/api/students',
+        messages: '/api/messages',
+        activity: '/api/activity',
+        meetings: '/api/meetings',
+        programs: '/api/programs',
+        staffActivity: '/api/staff-activity',
+        googleMeet: '/api/google-meet',
+        staffMeetings: '/api/staff-meetings',
+        ebooks: '/ebooks'
+      }
+    },
+    apis: {
+      google: !!(process.env.GOOGLE_API_KEY && process.env.GOOGLE_CX) ? '✅ Configured' : '❌ Not configured',
+      serpapi: !!process.env.SERPAPI_KEY ? '✅ Configured' : '❌ Not configured',
+      core: !!process.env.CORE_API_KEY ? '✅ Configured' : '❌ Not configured',
+      crossref: !!process.env.CROSSREF_EMAIL ? '✅ Configured' : '❌ Not configured',
+      firebase: '✅ Configured'
+    },
+    timestamp: new Date()
+  });
+});
+
+// ============================================
+// STAFF AND STUDENT MANAGEMENT ENDPOINTS (from second file)
+// ============================================
 
 app.get('/api/staff-with-passwords', async (req, res) => {
   try {
@@ -564,7 +814,7 @@ app.post('/api/students-with-password', async (req, res) => {
   }
 });
 
-// Enhanced bulk upload endpoint - FIXED VERSION
+// Enhanced bulk upload endpoint - FIXED VERSION (from second file)
 app.post('/api/bulk-users-enhanced', async (req, res) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   
@@ -727,7 +977,7 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
           const existingStaff = await Staff.findOne({ email: lowerEmail });
           
           if (existingStaff) {
-            // UPDATE EXISTING STAFF (This was missing!)
+            // UPDATE EXISTING STAFF
             existingStaff.name = name;
             existingStaff.department = cleanProgram || 'General';
             existingStaff.tempPassword = password;
@@ -783,7 +1033,7 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
             });
           }
         } else {
-          // Student logic (similar pattern)
+          // Student logic
           const existingStudent = await Student.findOne({ email: lowerEmail });
           if (existingStudent) {
             existingStudent.name = name;
@@ -1090,18 +1340,6 @@ app.post('/api/clear-temp-passwords', async (req, res) => {
   }
 });
 
-app.get('/api/health', (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: 'Server is running',
-    timestamp: new Date().toISOString(),
-    services: {
-      mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-      firebase: 'initialized'
-    }
-  });
-});
-
 app.get('/api/test-passwords', async (req, res) => {
   try {
     const staffCount = await Staff.countDocuments({ tempPassword: { $exists: true, $ne: null } });
@@ -1223,29 +1461,170 @@ app.delete('/api/users', async (req, res) => {
   }
 });
 
-app.use('/', (req, res, next) => {
-  res.status(404).json({
-    success: false,
-    message: 'Route not found',
-    path: req.path
+// ============================================
+// 404 HANDLER (from both files, merged)
+// ============================================
+// ============================================
+// 404 HANDLER (from both files, merged)
+// ============================================
+// Catch-all route for undefined routes
+app.use((req, res) => {
+  res.status(404).json({ 
+    success: false, 
+    message: `Route ${req.originalUrl} not found`,
+    path: req.path,
+    availableEndpoints: [
+      '/',
+      '/health',
+      '/api/health',
+      '/api/status',
+      '/api/plagiarism/check-file (POST)',
+      '/api/plagiarism/check-text (POST)',
+      '/api/plagiarism/history (GET)',
+      '/api/plagiarism/report/:id (GET)',
+      '/api/reports (GET)',
+      '/api/classes',
+      '/api/announcements',
+      '/api/units',
+      '/api/assignments',
+      '/api/submissions',
+      '/api/staff',
+      '/api/students',
+      '/api/messages',
+      '/api/activity',
+      '/api/meetings',
+      '/api/programs',
+      '/api/staff-activity',
+      '/api/google-meet',
+      '/api/staff-meetings',
+      '/ebooks'
+    ]
   });
 });
 
+// ============================================
+// ERROR HANDLING MIDDLEWARE (from first file, enhanced)
+// ============================================
 app.use((err, req, res, next) => {
-  console.error('Global error handler:', err.stack);
-  res.status(500).json({
-    success: false,
-    message: 'Internal Server Error',
-    error: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+  console.error('❌ Server Error:', err.stack);
+  
+  if (err.code === 'ECONNABORTED') {
+    return res.status(504).json({ 
+      success: false, 
+      message: 'Request timeout - The operation took too long. Please try again.' 
+    });
+  }
+  
+  if (err.name === 'MulterError') {
+    return res.status(400).json({ 
+      success: false, 
+      message: `File upload error: ${err.message}` 
+    });
+  }
+  
+  res.status(err.status || 500).json({ 
+    success: false, 
+    message: err.message || 'Internal server error',
+    error: process.env.NODE_ENV === 'development' ? err.stack : undefined
   });
 });
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-  console.log(`CORS enabled for: http://localhost:3000`);
+// ============================================
+// SERVER INITIALIZATION (merged from both files)
+// ============================================
+const PORT = process.env.PORT || 5000;
+
+const server = app.listen(PORT, () => {
+  console.log(`
+┌─────────────────────────────────────┐
+│  🚀 COMBINED API SERVER             │
+├─────────────────────────────────────┤
+│  📡 Port: ${PORT}                         │
+│  🌐 URL: http://localhost:${PORT}        │
+│  ⏰ Timeout: 30 minutes              │
+│  📁 Uploads: ${uploadDir}     │
+│  📁 Temp: ${tempDir}         │
+├─────────────────────────────────────┤
+│  🔑 Plagiarism APIs: ${Object.entries({
+    Google: !!(process.env.GOOGLE_API_KEY && process.env.GOOGLE_CX),
+    SerpAPI: !!process.env.SERPAPI_KEY,
+    CORE: !!process.env.CORE_API_KEY,
+    Crossref: !!process.env.CROSSREF_EMAIL
+  }).filter(([_, v]) => v).map(([k]) => k).join(', ') || 'None'}
+│  🔥 Firebase: ✅ Configured
+├─────────────────────────────────────┤
+│  📝 LMS Endpoints:                   │
+│  📚 Classes | Announcements | Units  │
+│  📝 Assignments | Submissions        │
+│  👥 Staff | Students | Messages      │
+│  📊 Activity | Meetings | Programs   │
+│  📖 Ebooks | Google Meet              │
+├─────────────────────────────────────┤
+│  ✅ Server is ready                  │
+│  📝 Check /health for status         │
+└─────────────────────────────────────┘
+  `);
+  
+  console.log(`CORS enabled for: http://localhost:3000, https://uelms.com`);
   console.log(`Activity Dashboard endpoints:`);
   console.log(`  GET  /api/staff-activity/summary`);
   console.log(`  GET  /api/staff-activity/all`);
   console.log(`  GET  /api/staff-activity/staff/:staffId`);
   console.log(`  GET  /api/staff/:identifier/classes`);
 });
+
+// Server timeout configuration (from first file)
+server.timeout = 1800000;        // 30 minutes
+server.keepAliveTimeout = 1800000;
+server.headersTimeout = 1810000; // slightly higher
+
+// ============================================
+// GRACEFUL SHUTDOWN (from first file)
+// ============================================
+process.on('SIGTERM', () => {
+  console.log('👋 SIGTERM received: closing HTTP server...');
+  server.close(() => {
+    console.log('🔴 HTTP server closed');
+    mongoose.connection.close()
+      .then(() => {
+        console.log('🔴 MongoDB connection closed');
+        process.exit(0);
+      })
+      .catch((err) => {
+        console.error('❌ Error closing MongoDB connection:', err);
+        process.exit(1);
+      });
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('👋 SIGINT received: closing HTTP server...');
+  server.close(() => {
+    console.log('🔴 HTTP server closed');
+    mongoose.connection.close()
+      .then(() => {
+        console.log('🔴 MongoDB connection closed');
+        process.exit(0);
+      })
+      .catch((err) => {
+        console.error('❌ Error closing MongoDB connection:', err);
+        process.exit(1);
+      });
+  });
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('💥 Uncaught Exception:', err);
+  server.close(() => {
+    mongoose.connection.close()
+      .then(() => process.exit(1))
+      .catch(() => process.exit(1));
+  });
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('💥 Unhandled Rejection:', err);
+  console.error('This rejection was not handled, but server continues running');
+});
+
+module.exports = app;
