@@ -115,8 +115,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// Handle preflight OPTIONS requests
-app.options('*', cors(corsOptions));
+;
 
 // Body parsing middleware (merged from both files - using higher limits)
 app.use(express.json({ limit: '10gb' }));
@@ -1651,3 +1650,4 @@ process.on('unhandledRejection', (err) => {
 });
 
 module.exports = app;
+
