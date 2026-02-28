@@ -33,7 +33,7 @@ if (!firebaseConfig.projectId || !firebaseConfig.clientEmail || !firebaseConfig.
 
 admin.initializeApp({
   credential: admin.credential.cert(firebaseConfig),
-  storageBucket: 'uelms-378db.firebasestorage.app',
+  storageBucket: 'uelms-378db.appspot.com', // ✅ FIXED
 });
 
 const bucket = admin.storage().bucket();
@@ -1626,5 +1626,6 @@ process.on('unhandledRejection', (err) => {
   console.error('💥 Unhandled Rejection:', err);
   console.error('This rejection was not handled, but server continues running');
 });
+
 
 module.exports = app;
