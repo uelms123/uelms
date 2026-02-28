@@ -1,32 +1,24 @@
+// server.js
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const dotenv = require('dotenv');
 const path = require('path');
 const fs = require('fs');
 const admin = require('firebase-admin');
-require('dotenv').config();
-const classRoutes = require('./routes/classRoutes');
-const announcementRoutes = require('./routes/announcementRoutes');
-const unitRoutes = require('./routes/unitRoutes');
-const assignmentRoutes = require('./routes/assignments');
-const submissionRoutes = require('./routes/submissions');
-const staffRoutes = require('./routes/staffRoutes');
-const studentRoutes = require('./routes/studentRoutes');
-const messageRoutes = require('./routes/messages');
-const studLogin = require('./routes/activityRoutes');
-const meetingRoutes = require('./routes/meetings');
-const programRoutes = require('./routes/programRoutes');
-const staffActivityRoutes = require('./routes/staffActivityRoutes');
-const googleMeetAttendanceRoutes = require('./routes/googleMeetAttendance');
-const staffMeetingsRoutes = require('./routes/staffMeetings');
-const ebookRoutes = require('./routes/ebookRoutes');
-require('./models/files');
-require('./models/unit');
-require('./models/DailyUpload');
-const Staff = require('./models/Staff');
-const Student = require('./models/Students');
-const Class = require('./models/Class');
-const StaffActivity = require('./models/StaffActivity');
+
+// Load environment variables
+dotenv.config();
+
+const app = express();
+
+// At the very top of server.js, after requires
+const dns = require('dns');
+dns.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']); // Google + Cloudflare DNS
+
+// ============================================
+// FIREBASE INITIALIZATION (from second file)
+// ============================================
 const firebaseConfig = {
   projectId: process.env.FIREBASE_PROJECT_ID,
   clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
@@ -34,24 +26,38 @@ const firebaseConfig = {
     ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
     : undefined,
 };
+
 if (!firebaseConfig.projectId || !firebaseConfig.clientEmail || !firebaseConfig.privateKey) {
   console.error('Missing Firebase configuration variables');
   process.exit(1);
 }
+
 admin.initializeApp({
   credential: admin.credential.cert(firebaseConfig),
-  storageBucket: 'uelms-378db.firebasestorage.app',
+  storageBucket: 'uelms-378db.appspot.com', // ✅ FIXED
 });
+
 const bucket = admin.storage().bucket();
-const app = express();
-const port = process.env.PORT || 5000;
-// Create temp directory for file uploads
+
+// ============================================
+// DIRECTORY CREATION (merged from both files)
+// ============================================
+
+// Ensure uploads directory exists (from first file)
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+  console.log('📁 Uploads directory created');
+}
+
+// Create temp directory for file uploads (from second file)
 const tempDir = path.join(__dirname, 'temp_uploads');
 if (!fs.existsSync(tempDir)) {
   fs.mkdirSync(tempDir, { recursive: true });
   console.log('Created temp uploads directory:', tempDir);
 }
-// Clean up temp files periodically
+
+// Clean up temp files periodically (from second file)
 setInterval(() => {
   if (fs.existsSync(tempDir)) {
     fs.readdir(tempDir, (err, files) => {
@@ -70,35 +76,201 @@ setInterval(() => {
     });
   }
 }, 3600000); // Run every hour
-// Increase payload size limits
-app.use(express.urlencoded({ extended: true, limit: '10gb' }));
-app.use(express.json({ limit: '10gb' }));
-app.use(cors({
-  origin: [
-    'https://uelms.com',
-    'http://localhost:3000',
-    'http://127.0.0.1:3000'
+
+// ============================================
+// MIDDLEWARE CONFIGURATION (merged from both files)
+// ============================================
+
+// CORS configuration - FIXED
+const corsOptions = {
+  origin: function (origin, callback) {
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://localhost:5000',
+      'http://127.0.0.1:3000',
+      'https://plagiarism-checker-olive.vercel.app',
+      'https://uelms.com'
+    ];
+    // Allow requests with no origin (like mobile apps, curl, etc)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'DELETE', 'PUT', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'x-user-id',
+    'x-user-email'
   ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
-  credentials: true
-}));
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-app.use('/uploads', express.static(uploadsDir));
+  exposedHeaders: ['Content-Disposition', 'Content-Length'],
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+
+app.use(cors(corsOptions));
+
+// Handle preflight OPTIONS requests
+app.options('*', cors(corsOptions));
+
+// Body parsing middleware (merged from both files - using higher limits)
+app.use(express.json({ limit: '10gb' }));
+app.use(express.urlencoded({ extended: true, limit: '10gb' }));
+
+// Static files (from both files)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// ============================================
+// REQUEST LOGGING MIDDLEWARE (from first file, enhanced)
+// ============================================
+app.use((req, res, next) => {
+  console.log(`📡 ${req.method} ${req.url} - ${new Date().toISOString()}`);
+  
+  // Set timeout for long requests (plagiarism checks)
+  req.setTimeout(1800000, () => { // 30 minutes
+    console.error(`⏰ Request timeout: ${req.method} ${req.url}`);
+  });
+  
+  // Response timeout
+  res.setTimeout(1800000, () => { // 30 minutes
+    console.error(`⏰ Response timeout: ${req.method} ${req.url}`);
+    if (!res.headersSent) {
+      res.status(504).json({ 
+        success: false, 
+        message: 'Request timeout - The operation is taking longer than expected. Please try again.' 
+      });
+    }
+  });
+  
+  next();
+});
+
+// Simple logging middleware (from second file)
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.path}`);
   next();
 });
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => {
-    console.log('Connected to MongoDB');
-  })
-  .catch((err) => {
-    console.error('MongoDB connection error:', err);
+
+// ============================================
+// MONGODB CONNECTION (merged from both files)
+// ============================================
+
+// MongoDB Connection with options (from first file)
+const mongooseOptions = {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 1800000, // 30 minutes
+  family: 4
+};
+
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(
+      process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://localhost:27017/plagiarism-detector',
+      mongooseOptions
+    );
+
+    console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
+    
+    // Create indexes (from first file)
+    try {
+      await conn.connection.db.collection('reports').createIndex({ createdAt: -1 });
+      await conn.connection.db.collection('reports').createIndex({ fileName: 1 });
+      await conn.connection.db.collection('reports').createIndex({ userId: 1 });
+      await conn.connection.db.collection('reports').createIndex({ userEmail: 1 });
+      console.log('📊 Database indexes created');
+    } catch (indexError) {
+      console.log('⚠️ Index creation skipped (may already exist)');
+    }
+    
+  } catch (error) {
+    console.error('❌ MongoDB Connection Error:', error.message);
+    console.log('⚠️  Make sure MongoDB is running on your system');
+    setTimeout(connectDB, 5000);
+  }
+};
+
+connectDB();
+
+// MongoDB listeners (from first file)
+mongoose.connection.on('error', err => {
+  console.error('❌ MongoDB connection error:', err);
+});
+
+mongoose.connection.on('disconnected', () => {
+  console.log('⚠️  MongoDB disconnected, attempting to reconnect...');
+  setTimeout(connectDB, 5000);
+});
+
+// ============================================
+// ROUTE IMPORTS (from second file)
+// ============================================
+const classRoutes = require('./routes/classRoutes');
+const announcementRoutes = require('./routes/announcementRoutes');
+const unitRoutes = require('./routes/unitRoutes');
+const assignmentRoutes = require('./routes/assignments');
+const submissionRoutes = require('./routes/submissions');
+const staffRoutes = require('./routes/staffRoutes');
+const studentRoutes = require('./routes/studentRoutes');
+const messageRoutes = require('./routes/messages');
+const studLogin = require('./routes/activityRoutes');
+const meetingRoutes = require('./routes/meetings');
+const programRoutes = require('./routes/programRoutes');
+const staffActivityRoutes = require('./routes/staffActivityRoutes');
+const googleMeetAttendanceRoutes = require('./routes/googleMeetAttendance');
+const staffMeetingsRoutes = require('./routes/staffMeetings');
+const ebookRoutes = require('./routes/ebookRoutes');
+
+// Model imports (from second file)
+require('./models/files');
+require('./models/unit');
+require('./models/DailyUpload');
+const Staff = require('./models/Staff');
+const Student = require('./models/Students');
+const Class = require('./models/Class');
+const StaffActivity = require('./models/StaffActivity');
+
+// ============================================
+// API ROUTES (from first file - plagiarism detector)
+// ============================================
+try {
+  // Add middleware to extract user info from headers for plagiarism routes
+  app.use('/api/plagiarism', (req, res, next) => {
+    // Extract user info from headers or query
+    const userId = req.headers['x-user-id'] || req.query.userId;
+    const userEmail = req.headers['x-user-email'] || req.query.userEmail;
+    
+    if (userId) req.userId = userId;
+    if (userEmail) req.userEmail = userEmail;
+    
+    // Add to body for POST requests
+    if (req.method === 'POST') {
+      req.body.userId = req.body.userId || userId;
+      req.body.userEmail = req.body.userEmail || userEmail;
+    }
+    
+    next();
   });
+  
+  const plagiarismRoutes = require('./routes/plagiarismRoutes');
+  const reportRoutes = require('./routes/reportRoutes');
+  
+  app.use('/api/plagiarism', plagiarismRoutes);
+  app.use('/api/reports', reportRoutes);
+  console.log('✅ Plagiarism routes loaded successfully (with user history support)');
+} catch (error) {
+  console.error('❌ Error loading plagiarism routes:', error.message);
+}
+
+// ============================================
+// API ROUTES (from second file - LMS)
+// ============================================
 app.use('/api/classes', classRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/units', unitRoutes);
@@ -113,13 +285,133 @@ app.use('/api/programs', programRoutes);
 app.use('/api/staff-activity', staffActivityRoutes);
 app.use('/api/google-meet', require('./routes/googleMeetAttendance'));
 app.use('/api/staff-meetings', staffMeetingsRoutes);
-app.use(ebookRoutes);
+app.use(ebookRoutes); 
+
+// ============================================
+// API STATUS ENDPOINTS (from first file)
+// ============================================
+
+// API Key status endpoint
+app.get('/api/status', (req, res) => {
+  const apiStatus = {
+    google: {
+      enabled: !!(process.env.GOOGLE_API_KEY && process.env.GOOGLE_CX),
+      keyPresent: !!process.env.GOOGLE_API_KEY,
+      cxPresent: !!process.env.GOOGLE_CX
+    },
+    serpapi: {
+      enabled: !!process.env.SERPAPI_KEY,
+      keyPresent: !!process.env.SERPAPI_KEY
+    },
+    core: {
+      enabled: !!process.env.CORE_API_KEY,
+      keyPresent: !!process.env.CORE_API_KEY
+    },
+    crossref: {
+      enabled: !!process.env.CROSSREF_EMAIL,
+      emailPresent: !!process.env.CROSSREF_EMAIL
+    }
+  };
+  
+  res.json({
+    success: true,
+    message: 'API Status',
+    server: {
+      status: 'running',
+      port: process.env.PORT || 5000,
+      environment: process.env.NODE_ENV || 'development'
+    },
+    apis: apiStatus,
+    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    timestamp: new Date()
+  });
+});
+
+// Health check (from first file - enhanced)
+app.get('/health', (req, res) => {
+  res.json({ 
+    success: true,
+    message: 'Plagiarism Detector API Running ✅', 
+    status: 'OK', 
+    timestamp: new Date(),
+    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    uptime: process.uptime(),
+    memory: process.memoryUsage()
+  });
+});
+
+// Health check (from second file)
+app.get('/api/health', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Server is running',
+    timestamp: new Date().toISOString(),
+    services: {
+      mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      firebase: 'initialized'
+    }
+  });
+});
+
+// Root endpoint (from first file - enhanced)
+app.get('/', (req, res) => {
+  res.json({ 
+    success: true,
+    message: '📚 Combined API Server', 
+    version: '2.0.0',
+    endpoints: {
+      // Plagiarism detector endpoints
+      plagiarism: {
+        health: '/health',
+        status: '/api/status',
+        checkFile: '/api/plagiarism/check-file (POST)',
+        checkText: '/api/plagiarism/check-text (POST)',
+        history: '/api/plagiarism/history (GET)',
+        report: '/api/plagiarism/report/:id (GET)',
+        reports: '/api/reports (GET)',
+        download: '/api/reports/download/:id (GET)',
+        delete: '/api/reports/:id (DELETE)'
+      },
+      // LMS endpoints
+      lms: {
+        classes: '/api/classes',
+        announcements: '/api/announcements',
+        units: '/api/units',
+        assignments: '/api/assignments',
+        submissions: '/api/submissions',
+        staff: '/api/staff',
+        students: '/api/students',
+        messages: '/api/messages',
+        activity: '/api/activity',
+        meetings: '/api/meetings',
+        programs: '/api/programs',
+        staffActivity: '/api/staff-activity',
+        googleMeet: '/api/google-meet',
+        staffMeetings: '/api/staff-meetings',
+        ebooks: '/ebooks'
+      }
+    },
+    apis: {
+      google: !!(process.env.GOOGLE_API_KEY && process.env.GOOGLE_CX) ? '✅ Configured' : '❌ Not configured',
+      serpapi: !!process.env.SERPAPI_KEY ? '✅ Configured' : '❌ Not configured',
+      core: !!process.env.CORE_API_KEY ? '✅ Configured' : '❌ Not configured',
+      crossref: !!process.env.CROSSREF_EMAIL ? '✅ Configured' : '❌ Not configured',
+      firebase: '✅ Configured'
+    },
+    timestamp: new Date()
+  });
+});
+
+// ============================================
+// STAFF AND STUDENT MANAGEMENT ENDPOINTS (from second file)
+// ============================================
+
 app.get('/api/staff-with-passwords', async (req, res) => {
   try {
     console.log('Fetching staff with passwords...');
     let staff = await Staff.find({}, '-__v').lean();
     console.log(`Found ${staff.length} staff members`);
-   
+    
     for (let s of staff) {
       if (s.staffId) {
         const summary = await StaffActivity.getStaffSummary(s.staffId);
@@ -129,7 +421,7 @@ app.get('/api/staff-with-passwords', async (req, res) => {
           assessments: summary.totalAssessments || 0,
           visits: summary.totalVisits || 0,
         };
-       
+        
         const classes = await Class.find({ staffId: s.staffId }).select('name subject section createdAt').lean();
         s.classes = classes || [];
       } else {
@@ -137,15 +429,17 @@ app.get('/api/staff-with-passwords', async (req, res) => {
         s.classes = [];
       }
     }
+
     res.status(200).json(staff);
   } catch (err) {
     console.error('Error fetching staff with passwords:', err);
-    res.status(500).json({
+    res.status(500).json({ 
       success: false,
-      error: 'Failed to fetch staff with passwords: ' + err.message
+      error: 'Failed to fetch staff with passwords: ' + err.message 
     });
   }
 });
+
 app.get('/api/students-with-passwords', async (req, res) => {
   try {
     console.log('Fetching students with passwords...');
@@ -154,46 +448,47 @@ app.get('/api/students-with-passwords', async (req, res) => {
     res.status(200).json(students);
   } catch (err) {
     console.error('Error fetching students with passwords:', err);
-    res.status(500).json({
+    res.status(500).json({ 
       success: false,
-      error: 'Failed to fetch students with passwords: ' + err.message
+      error: 'Failed to fetch students with passwords: ' + err.message 
     });
   }
 });
+
 app.get('/api/staff/:identifier/classes', async (req, res) => {
   try {
     const { identifier } = req.params;
     console.log('Fetching classes for staff identifier:', identifier);
-   
+    
     let staff = null;
-   
+    
     if (identifier.length > 20) {
       staff = await Staff.findOne({ staffId: identifier });
     }
-   
+    
     if (!staff && identifier.includes('@')) {
       staff = await Staff.findOne({ email: identifier.toLowerCase() });
     }
-   
+    
     if (!staff && mongoose.Types.ObjectId.isValid(identifier)) {
       staff = await Staff.findById(identifier);
     }
-   
+    
     let classes = [];
-   
+    
     if (staff && staff.staffId) {
       classes = await Class.find({ staffId: staff.staffId }).sort({ createdAt: -1 });
     } else {
-      classes = await Class.find({
+      classes = await Class.find({ 
         $or: [
           { createdBy: identifier.toLowerCase() },
           { 'staff.email': identifier.toLowerCase() }
         ]
       }).sort({ createdAt: -1 });
     }
-   
+    
     console.log(`Found ${classes.length} classes for ${identifier}`);
-   
+    
     res.status(200).json({
       success: true,
       classes,
@@ -202,26 +497,27 @@ app.get('/api/staff/:identifier/classes', async (req, res) => {
     });
   } catch (err) {
     console.error('Error fetching staff classes:', err);
-    res.status(500).json({
+    res.status(500).json({ 
       success: false,
-      error: 'Failed to fetch staff classes: ' + err.message
+      error: 'Failed to fetch staff classes: ' + err.message 
     });
   }
 });
+
 app.get('/api/staff/email/:email/classes', async (req, res) => {
   try {
     const { email } = req.params;
     console.log('Fetching classes for staff email:', email);
-   
-    const classes = await Class.find({
+    
+    const classes = await Class.find({ 
       $or: [
         { createdBy: email.toLowerCase() },
         { 'staff.email': email.toLowerCase() }
       ]
     }).sort({ createdAt: -1 });
-   
+    
     console.log(`Found ${classes.length} classes for email ${email}`);
-   
+    
     res.status(200).json({
       success: true,
       classes,
@@ -229,29 +525,30 @@ app.get('/api/staff/email/:email/classes', async (req, res) => {
     });
   } catch (err) {
     console.error('Error fetching classes by email:', err);
-    res.status(500).json({
+    res.status(500).json({ 
       success: false,
-      error: 'Failed to fetch classes by email: ' + err.message
+      error: 'Failed to fetch classes by email: ' + err.message 
     });
   }
 });
+
 app.get('/api/classes', async (req, res) => {
   try {
     const { staffId, email, search, limit = 100 } = req.query;
-   
+    
     const query = {};
-   
+    
     if (staffId) {
       query.staffId = staffId;
     }
-   
+    
     if (email) {
       query.$or = [
         { createdBy: email.toLowerCase() },
         { 'staff.email': email.toLowerCase() }
       ];
     }
-   
+    
     if (search) {
       query.$or = [
         { name: { $regex: search, $options: 'i' } },
@@ -259,11 +556,11 @@ app.get('/api/classes', async (req, res) => {
         { section: { $regex: search, $options: 'i' } }
       ];
     }
-   
+    
     const classes = await Class.find(query)
       .sort({ createdAt: -1 })
       .limit(parseInt(limit));
-   
+    
     res.status(200).json({
       success: true,
       classes,
@@ -271,51 +568,52 @@ app.get('/api/classes', async (req, res) => {
     });
   } catch (err) {
     console.error('Error fetching classes:', err);
-    res.status(500).json({
+    res.status(500).json({ 
       success: false,
-      error: 'Failed to fetch classes: ' + err.message
+      error: 'Failed to fetch classes: ' + err.message 
     });
   }
 });
+
 app.post('/api/staff-with-password', async (req, res) => {
   let firebaseUser = null;
- 
+  
   try {
     const { name, program, email, tempPassword } = req.body;
-   
+    
     console.log('Adding staff with password:', { name, email });
-   
+    
     if (!name) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Name is required'
+        error: 'Name is required' 
       });
     }
-   
+    
     if (!email) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Email is required'
+        error: 'Email is required' 
       });
     }
-   
+    
     if (!tempPassword || tempPassword.length < 6) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Password is required and must be at least 6 characters'
+        error: 'Password is required and must be at least 6 characters' 
       });
     }
-   
+    
     const lowerEmail = email.toLowerCase().trim();
-   
+    
     const existingStaff = await Staff.findOne({ email: lowerEmail });
     if (existingStaff) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Staff email already exists in database'
+        error: 'Staff email already exists in database' 
       });
     }
-   
+    
     try {
       firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
       console.log('Firebase user already exists:', firebaseUser.uid);
@@ -333,9 +631,9 @@ app.post('/api/staff-with-password', async (req, res) => {
         } catch (createErr) {
           console.error('Error creating Firebase user:', createErr);
           if (createErr.code === 'auth/email-already-exists') {
-            return res.status(400).json({
+            return res.status(400).json({ 
               success: false,
-              error: 'Email already exists in Firebase'
+              error: 'Email already exists in Firebase' 
             });
           }
           throw createErr;
@@ -344,8 +642,8 @@ app.post('/api/staff-with-password', async (req, res) => {
         throw firebaseErr;
       }
     }
-   
-    const staff = new Staff({
+    
+    const staff = new Staff({ 
       staffId: firebaseUser.uid,
       name: name,
       program: program || null,
@@ -355,19 +653,19 @@ app.post('/api/staff-with-password', async (req, res) => {
       createdByAdmin: true,
       createdTimestamp: new Date().toISOString()
     });
-   
+    
     await staff.save();
-   
+    
     console.log('Staff added successfully:', staff.email);
-   
-    res.status(201).json({
+    
+    res.status(201).json({ 
       success: true,
       message: 'Staff added successfully',
       data: staff
     });
   } catch (err) {
     console.error('Error adding staff with password:', err);
-   
+    
     if (firebaseUser) {
       try {
         await admin.auth().deleteUser(firebaseUser.uid);
@@ -376,81 +674,82 @@ app.post('/api/staff-with-password', async (req, res) => {
         console.error('Error cleaning up Firebase user:', cleanupErr);
       }
     }
-   
+    
     if (err.code === 11000) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Staff email already exists in database'
+        error: 'Staff email already exists in database' 
       });
     }
-   
+    
     if (err.code === 'auth/email-already-exists') {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Email already registered in Firebase'
+        error: 'Email already registered in Firebase' 
       });
     }
-   
+    
     if (err.name === 'ValidationError') {
       const messages = Object.values(err.errors).map(val => val.message);
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Validation error: ' + messages.join(', ')
+        error: 'Validation error: ' + messages.join(', ') 
       });
     }
-   
-    res.status(500).json({
+    
+    res.status(500).json({ 
       success: false,
-      error: 'Failed to add staff: ' + err.message
+      error: 'Failed to add staff: ' + err.message 
     });
   }
 });
+
 app.post('/api/students-with-password', async (req, res) => {
   let firebaseUser = null;
- 
+  
   try {
     const { name, program, email, tempPassword } = req.body;
-   
+    
     console.log('Adding student with password:', { name, email });
-   
+    
     if (!name) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Name is required'
+        error: 'Name is required' 
       });
     }
-   
+    
     if (!program) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Program is required'
+        error: 'Program is required' 
       });
     }
-   
+    
     if (!email) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Email is required'
+        error: 'Email is required' 
       });
     }
-   
+    
     if (!tempPassword || tempPassword.length < 6) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Password is required and must be at least 6 characters'
+        error: 'Password is required and must be at least 6 characters' 
       });
     }
-   
+    
     const lowerEmail = email.toLowerCase().trim();
-   
+    
     const existingStudent = await Student.findOne({ email: lowerEmail });
     if (existingStudent) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Student email already exists in database'
+        error: 'Student email already exists in database' 
       });
     }
-   
+    
     try {
       firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
       console.log('Firebase user already exists:', firebaseUser.uid);
@@ -468,9 +767,9 @@ app.post('/api/students-with-password', async (req, res) => {
         } catch (createErr) {
           console.error('Error creating Firebase user:', createErr);
           if (createErr.code === 'auth/email-already-exists') {
-            return res.status(400).json({
+            return res.status(400).json({ 
               success: false,
-              error: 'Email already exists in Firebase'
+              error: 'Email already exists in Firebase' 
             });
           }
           throw createErr;
@@ -479,8 +778,8 @@ app.post('/api/students-with-password', async (req, res) => {
         throw firebaseErr;
       }
     }
-   
-    const student = new Student({
+    
+    const student = new Student({ 
       studentId: firebaseUser.uid,
       name: name,
       program: program,
@@ -490,19 +789,19 @@ app.post('/api/students-with-password', async (req, res) => {
       createdByAdmin: true,
       createdTimestamp: new Date().toISOString()
     });
-   
+    
     await student.save();
-   
+    
     console.log('Student added successfully:', student.email);
-   
-    res.status(201).json({
+    
+    res.status(201).json({ 
       success: true,
       message: 'Student added successfully',
       data: student
     });
   } catch (err) {
     console.error('Error adding student with password:', err);
-   
+    
     if (firebaseUser) {
       try {
         await admin.auth().deleteUser(firebaseUser.uid);
@@ -511,66 +810,70 @@ app.post('/api/students-with-password', async (req, res) => {
         console.error('Error cleaning up Firebase user:', cleanupErr);
       }
     }
-   
+    
     if (err.code === 11000) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Student email already exists in database'
+        error: 'Student email already exists in database' 
       });
     }
-   
+    
     if (err.code === 'auth/email-already-exists') {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Email already registered in Firebase'
+        error: 'Email already registered in Firebase' 
       });
     }
-   
+    
     if (err.name === 'ValidationError') {
       const messages = Object.values(err.errors).map(val => val.message);
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Validation error: ' + messages.join(', ')
+        error: 'Validation error: ' + messages.join(', ') 
       });
     }
-   
-    res.status(500).json({
+    
+    res.status(500).json({ 
       success: false,
-      error: 'Failed to add student: ' + err.message
+      error: 'Failed to add student: ' + err.message 
     });
   }
 });
-// Enhanced bulk upload endpoint - FIXED VERSION
+
+// Enhanced bulk upload endpoint - FIXED VERSION (from second file)
 app.post('/api/bulk-users-enhanced', async (req, res) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
- 
+  
   try {
-    const type = req.query.type;
+    const type = req.query.type; 
     const users = req.body.users;
-    console.log('Enhanced bulk upload:', {
-      type,
+
+    console.log('Enhanced bulk upload:', { 
+      type, 
       userCount: users?.length,
       sampleUser: users?.[0]
     });
+
     if (!type || !['staff', 'student'].includes(type)) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Invalid or missing type (staff|student).'
+        error: 'Invalid or missing type (staff|student).' 
       });
     }
-   
+    
     if (!Array.isArray(users) || users.length === 0) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'No users provided'
+        error: 'No users provided' 
       });
     }
+
     const results = [];
     const createdFirebaseUsers = [];
-   
+    
     for (let i = 0; i < users.length; i++) {
       const user = users[i];
-     
+      
       // Normalize field names
       const normalizedUser = {
         name: user.name || user.Name || '',
@@ -578,87 +881,89 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
         email: user.email || user.Email || '',
         password: user.password || user.Password || user.tempPassword || ''
       };
-     
+      
       const { name, program, email, password } = normalizedUser;
-     
+      
       // Row tracking
       const rowNumber = user.rowNumber || i + 1;
-     
+      
       // Validate email
       if (!email || typeof email !== 'string') {
-        results.push({
+        results.push({ 
           row: rowNumber,
           email: email || 'unknown',
           name: name || 'unknown',
-          success: false,
-          error: 'Email is required'
+          success: false, 
+          error: 'Email is required' 
         });
         continue;
       }
-     
+      
       // Validate password
       if (!password || typeof password !== 'string') {
-        results.push({
+        results.push({ 
           row: rowNumber,
           email: email,
           name: name || 'unknown',
-          success: false,
-          error: 'Password is required'
+          success: false, 
+          error: 'Password is required' 
         });
         continue;
       }
-     
+      
       // Validate name
       if (!name || !name.trim()) {
-        results.push({
+        results.push({ 
           row: rowNumber,
           email: email,
           name: name || 'unknown',
-          success: false,
-          error: 'Name is required'
+          success: false, 
+          error: 'Name is required' 
         });
         continue;
       }
-     
+      
       // Validate program/department for staff
       const cleanProgram = (program || '').trim();
       if (type === 'staff' && !cleanProgram) {
-        results.push({
+        results.push({ 
           row: rowNumber,
           email: email,
           name: name,
-          success: false,
-          error: 'Department/Program is required'
+          success: false, 
+          error: 'Department/Program is required' 
         });
         continue;
       }
-     
+      
       // Validate password length
       if (password.length < 6) {
-        results.push({
+        results.push({ 
           row: rowNumber,
           email: email,
           name: name,
-          success: false,
-          error: 'Password must be at least 6 characters'
+          success: false, 
+          error: 'Password must be at least 6 characters' 
         });
         continue;
       }
-     
+      
       // Validate email format
       if (!emailRegex.test(email)) {
-        results.push({
+        results.push({ 
           row: rowNumber,
           email: email,
           name: name,
-          success: false,
-          error: 'Invalid email format'
+          success: false, 
+          error: 'Invalid email format' 
         });
         continue;
       }
+
       let lowerEmail = email.toLowerCase();
       let firebaseUser = null;
       let action = 'skipped';
+
       try {
         // Check Firebase first
         try {
@@ -669,8 +974,8 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
           if (err.code === 'auth/user-not-found') {
             // Create new Firebase user
             try {
-              firebaseUser = await admin.auth().createUser({
-                email: lowerEmail,
+              firebaseUser = await admin.auth().createUser({ 
+                email: lowerEmail, 
                 password: password,
                 displayName: name.trim(),
                 emailVerified: false,
@@ -679,12 +984,12 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
               createdFirebaseUsers.push({ uid: firebaseUser.uid, email: lowerEmail });
               action = 'create_firebase';
             } catch (createErr) {
-              results.push({
+              results.push({ 
                 row: rowNumber,
                 email: lowerEmail,
                 name: name,
-                success: false,
-                error: 'Firebase creation failed: ' + createErr.message
+                success: false, 
+                error: 'Firebase creation failed: ' + createErr.message 
               });
               continue;
             }
@@ -692,16 +997,17 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
             throw err;
           }
         }
+
         // Handle database operations
         if (type === 'staff') {
           const existingStaff = await Staff.findOne({ email: lowerEmail });
-         
+          
           if (existingStaff) {
-            // UPDATE EXISTING STAFF (This was missing!)
+            // UPDATE EXISTING STAFF
             existingStaff.name = name;
             existingStaff.department = cleanProgram || 'General';
             existingStaff.tempPassword = password;
-           
+            
             // Add to password history
             if (!existingStaff.passwordHistory) {
               existingStaff.passwordHistory = [];
@@ -711,11 +1017,11 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
               createdAt: new Date(),
               createdBy: 'admin_bulk_update'
             });
-           
+            
             await existingStaff.save();
             action = 'updated';
-           
-            results.push({
+            
+            results.push({ 
               row: rowNumber,
               email: lowerEmail,
               name: name,
@@ -740,11 +1046,11 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
                 createdBy: 'admin_bulk_create'
               }]
             };
-           
+            
             await Staff.create(staffData);
             action = 'created';
-           
-            results.push({
+            
+            results.push({ 
               row: rowNumber,
               email: lowerEmail,
               name: name,
@@ -753,7 +1059,7 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
             });
           }
         } else {
-          // Student logic (similar pattern)
+          // Student logic
           const existingStudent = await Student.findOne({ email: lowerEmail });
           if (existingStudent) {
             existingStudent.name = name;
@@ -761,8 +1067,8 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
             existingStudent.tempPassword = password;
             await existingStudent.save();
             action = 'updated';
-           
-            results.push({
+            
+            results.push({ 
               row: rowNumber,
               email: lowerEmail,
               name: name,
@@ -783,8 +1089,8 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
             };
             await Student.create(studentData);
             action = 'created';
-           
-            results.push({
+            
+            results.push({ 
               row: rowNumber,
               email: lowerEmail,
               name: name,
@@ -795,14 +1101,14 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
         }
       } catch (err) {
         console.error(`Error processing user ${lowerEmail}:`, err.message);
-        results.push({
+        results.push({ 
           row: rowNumber,
           email: lowerEmail,
           name: name,
-          success: false,
-          error: err.message
+          success: false, 
+          error: err.message 
         });
-       
+        
         // Cleanup Firebase user if created and failed
         if (action === 'create_firebase' && firebaseUser) {
           try {
@@ -813,14 +1119,15 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
         }
       }
     }
+
     // Calculate statistics
     const successCount = results.filter(r => r.success).length;
     const createdCount = results.filter(r => r.success && r.action === 'created').length;
     const updatedCount = results.filter(r => r.success && r.action === 'updated').length;
-   
+    
     console.log(`Enhanced bulk upload completed: ${successCount}/${users.length} successful`);
-   
-    res.status(200).json({
+    
+    res.status(200).json({ 
       success: true,
       message: `Bulk ${type} upload completed`,
       stats: {
@@ -830,68 +1137,74 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
         created: createdCount,
         updated: updatedCount
       },
-      results
+      results 
     });
   } catch (err) {
     console.error('Error in enhanced bulk upload:', err);
-    res.status(500).json({
+    res.status(500).json({ 
       success: false,
-      error: 'Failed to process bulk upload: ' + err.message
+      error: 'Failed to process bulk upload: ' + err.message 
     });
   }
 });
+
 app.post('/api/bulk-users-with-passwords', async (req, res) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
- 
+  
   try {
-    const type = req.query.type;
+    const type = req.query.type; 
     const users = req.body.users;
+
     console.log('Bulk user creation with passwords:', { type, userCount: users?.length });
+
     if (!type || !['staff', 'student'].includes(type)) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'Invalid or missing type (staff|student).'
+        error: 'Invalid or missing type (staff|student).' 
       });
     }
-   
+    
     if (!Array.isArray(users) || users.length === 0) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         success: false,
-        error: 'No users provided'
+        error: 'No users provided' 
       });
     }
+
     const results = [];
     const createdFirebaseUsers = [];
-   
+    
     for (const user of users) {
       const { name, program, email, password } = user;
-     
+      
       if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
         results.push({ email: email || 'unknown', success: false, error: 'Email and password are required' });
         continue;
       }
-     
+      
       if (!name) {
         results.push({ email, success: false, error: 'Name is required' });
         continue;
       }
-     
+      
       if (type === 'student' && !program) {
         results.push({ email, success: false, error: 'Program is required for students' });
         continue;
       }
-     
+      
       if (password.length < 6) {
         results.push({ email, success: false, error: 'Password must be at least 6 characters' });
         continue;
       }
-     
+      
       if (!emailRegex.test(email)) {
         results.push({ email, success: false, error: 'Invalid email format' });
         continue;
       }
+
       let lowerEmail = email.toLowerCase();
       let firebaseUser = null;
+
       try {
         try {
           firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
@@ -899,8 +1212,8 @@ app.post('/api/bulk-users-with-passwords', async (req, res) => {
         } catch (err) {
           if (err.code === 'auth/user-not-found') {
             try {
-              firebaseUser = await admin.auth().createUser({
-                email: lowerEmail,
+              firebaseUser = await admin.auth().createUser({ 
+                email: lowerEmail, 
                 password,
                 displayName: name,
                 emailVerified: false,
@@ -916,6 +1229,7 @@ app.post('/api/bulk-users-with-passwords', async (req, res) => {
             throw err;
           }
         }
+
         if (type === 'staff') {
           const existingStaff = await Staff.findOne({ email: lowerEmail });
           if (existingStaff) {
@@ -929,6 +1243,7 @@ app.post('/api/bulk-users-with-passwords', async (req, res) => {
             continue;
           }
         }
+
         if (type === 'staff') {
           const staffData = {
             staffId: firebaseUser.uid,
@@ -954,11 +1269,12 @@ app.post('/api/bulk-users-with-passwords', async (req, res) => {
           };
           await Student.create(studentData);
         }
+
         results.push({ email: lowerEmail, success: true });
       } catch (err) {
         console.error(`Error creating user ${lowerEmail}:`, err.message);
         results.push({ email: lowerEmail, success: false, error: err.message });
-       
+        
         if (firebaseUser && !createdFirebaseUsers.some(u => u.uid === firebaseUser.uid)) {
           try {
             await admin.auth().deleteUser(firebaseUser.uid);
@@ -968,6 +1284,7 @@ app.post('/api/bulk-users-with-passwords', async (req, res) => {
         }
       }
     }
+
     if (results.some(r => !r.success) && createdFirebaseUsers.length > 0) {
       console.log('Cleaning up Firebase users due to errors...');
       for (const fbUser of createdFirebaseUsers) {
@@ -982,10 +1299,11 @@ app.post('/api/bulk-users-with-passwords', async (req, res) => {
         }
       }
     }
+
     const successCount = results.filter(r => r.success).length;
     console.log(`Bulk creation completed: ${successCount}/${users.length} successful`);
-   
-    res.status(200).json({
+    
+    res.status(200).json({ 
       success: true,
       message: `Bulk ${type} creation completed`,
       stats: {
@@ -993,44 +1311,45 @@ app.post('/api/bulk-users-with-passwords', async (req, res) => {
         successful: successCount,
         failed: users.length - successCount
       },
-      results
+      results 
     });
   } catch (err) {
     console.error('Error in bulk user creation:', err);
-    res.status(500).json({
+    res.status(500).json({ 
       success: false,
-      error: 'Failed to bulk create users: ' + err.message
+      error: 'Failed to bulk create users: ' + err.message 
     });
   }
 });
+
 app.post('/api/clear-temp-passwords', async (req, res) => {
   try {
     console.log('Clearing temporary passwords...');
-   
+    
     const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-   
+    
     const staffResult = await Staff.updateMany(
-      {
+      { 
         tempPassword: { $exists: true, $ne: null },
         createdAt: { $lt: twentyFourHoursAgo }
       },
       { $unset: { tempPassword: "" } }
     );
-   
+    
     const studentResult = await Student.updateMany(
-      {
+      { 
         tempPassword: { $exists: true, $ne: null },
         createdAt: { $lt: twentyFourHoursAgo }
       },
       { $unset: { tempPassword: "" } }
     );
-   
+    
     console.log('Password cleanup completed:', {
       staffCleared: staffResult.modifiedCount,
       studentCleared: studentResult.modifiedCount
     });
-   
-    res.status(200).json({
+    
+    res.status(200).json({ 
       success: true,
       message: 'Temporary passwords cleared successfully',
       stats: {
@@ -1040,28 +1359,18 @@ app.post('/api/clear-temp-passwords', async (req, res) => {
     });
   } catch (err) {
     console.error('Error clearing temporary passwords:', err);
-    res.status(500).json({
+    res.status(500).json({ 
       success: false,
-      error: 'Failed to clear temporary passwords: ' + err.message
+      error: 'Failed to clear temporary passwords: ' + err.message 
     });
   }
 });
-app.get('/api/health', (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: 'Server is running',
-    timestamp: new Date().toISOString(),
-    services: {
-      mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-      firebase: 'initialized'
-    }
-  });
-});
+
 app.get('/api/test-passwords', async (req, res) => {
   try {
     const staffCount = await Staff.countDocuments({ tempPassword: { $exists: true, $ne: null } });
     const studentCount = await Student.countDocuments({ tempPassword: { $exists: true, $ne: null } });
-   
+    
     res.status(200).json({
       success: true,
       message: 'Password system is working',
@@ -1075,17 +1384,18 @@ app.get('/api/test-passwords', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 app.put('/api/users', async (req, res) => {
   try {
     const { oldEmail, newEmail, type, name, program, newPassword, tempPassword } = req.body;
-   
+    
     if (!oldEmail || !type) {
       return res.status(400).json({
         success: false,
         error: 'Old email and type are required'
       });
     }
-   
+    
     let Model, queryField;
     if (type === 'staff') {
       Model = Staff;
@@ -1094,7 +1404,7 @@ app.put('/api/users', async (req, res) => {
       Model = Student;
       queryField = 'email';
     }
-   
+    
     const user = await Model.findOne({ [queryField]: oldEmail.toLowerCase() });
     if (!user) {
       return res.status(404).json({
@@ -1102,7 +1412,7 @@ app.put('/api/users', async (req, res) => {
         error: `${type} not found`
       });
     }
-   
+    
     if (name) user.name = name;
     if (program !== undefined) user.program = program;
     if (newEmail && newEmail !== oldEmail) {
@@ -1115,14 +1425,14 @@ app.put('/api/users', async (req, res) => {
       }
       user.email = newEmail.toLowerCase();
     }
-   
+    
     if (tempPassword) {
       user.tempPassword = tempPassword;
       user.tempPasswordSetAt = new Date();
     }
-   
+    
     await user.save();
-   
+    
     res.status(200).json({
       success: true,
       message: `${type} updated successfully`,
@@ -1136,33 +1446,34 @@ app.put('/api/users', async (req, res) => {
     });
   }
 });
+
 app.delete('/api/users', async (req, res) => {
   try {
     const { email, type } = req.body;
-   
+    
     if (!email || !type) {
       return res.status(400).json({
         success: false,
         error: 'Email and type are required'
       });
     }
-   
+    
     let Model;
     if (type === 'staff') {
       Model = Staff;
     } else {
       Model = Student;
     }
-   
+    
     const result = await Model.findOneAndDelete({ email: email.toLowerCase() });
-   
+    
     if (!result) {
       return res.status(404).json({
         success: false,
         error: `${type} not found`
       });
     }
-   
+    
     res.status(200).json({
       success: true,
       message: `${type} deleted successfully`
@@ -1175,27 +1486,168 @@ app.delete('/api/users', async (req, res) => {
     });
   }
 });
-app.use('/', (req, res, next) => {
-  res.status(404).json({
-    success: false,
-    message: 'Route not found',
-    path: req.path
+
+// ============================================
+// 404 HANDLER (from both files, merged)
+// ============================================
+// Catch-all route for undefined routes
+app.use((req, res) => {
+  res.status(404).json({ 
+    success: false, 
+    message: `Route ${req.originalUrl} not found`,
+    path: req.path,
+    availableEndpoints: [
+      '/',
+      '/health',
+      '/api/health',
+      '/api/status',
+      '/api/plagiarism/check-file (POST)',
+      '/api/plagiarism/check-text (POST)',
+      '/api/plagiarism/history (GET)',
+      '/api/plagiarism/report/:id (GET)',
+      '/api/reports (GET)',
+      '/api/classes',
+      '/api/announcements',
+      '/api/units',
+      '/api/assignments',
+      '/api/submissions',
+      '/api/staff',
+      '/api/students',
+      '/api/messages',
+      '/api/activity',
+      '/api/meetings',
+      '/api/programs',
+      '/api/staff-activity',
+      '/api/google-meet',
+      '/api/staff-meetings',
+      '/ebooks'
+    ]
   });
 });
+
+// ============================================
+// ERROR HANDLING MIDDLEWARE (from first file, enhanced)
+// ============================================
 app.use((err, req, res, next) => {
-  console.error('Global error handler:', err.stack);
-  res.status(500).json({
-    success: false,
-    message: 'Internal Server Error',
-    error: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong'
+  console.error('❌ Server Error:', err.stack);
+  
+  if (err.code === 'ECONNABORTED') {
+    return res.status(504).json({ 
+      success: false, 
+      message: 'Request timeout - The operation took too long. Please try again.' 
+    });
+  }
+  
+  if (err.name === 'MulterError') {
+    return res.status(400).json({ 
+      success: false, 
+      message: `File upload error: ${err.message}` 
+    });
+  }
+  
+  res.status(err.status || 500).json({ 
+    success: false, 
+    message: err.message || 'Internal server error',
+    error: process.env.NODE_ENV === 'development' ? err.stack : undefined
   });
 });
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-  console.log(`CORS enabled for: http://localhost:3000`);
+
+// ============================================
+// SERVER INITIALIZATION (merged from both files)
+// ============================================
+const PORT = process.env.PORT || 5000;
+
+const server = app.listen(PORT, () => {
+  console.log(`
+┌─────────────────────────────────────┐
+│  🚀 COMBINED API SERVER             │
+├─────────────────────────────────────┤
+│  📡 Port: ${PORT}                         │
+│  🌐 URL: http://localhost:${PORT}        │
+│  ⏰ Timeout: 30 minutes              │
+│  📁 Uploads: ${uploadDir}     │
+│  📁 Temp: ${tempDir}         │
+├─────────────────────────────────────┤
+│  🔑 Plagiarism APIs: ${Object.entries({
+    Google: !!(process.env.GOOGLE_API_KEY && process.env.GOOGLE_CX),
+    SerpAPI: !!process.env.SERPAPI_KEY,
+    CORE: !!process.env.CORE_API_KEY,
+    Crossref: !!process.env.CROSSREF_EMAIL
+  }).filter(([_, v]) => v).map(([k]) => k).join(', ') || 'None'}
+│  🔥 Firebase: ✅ Configured
+├─────────────────────────────────────┤
+│  📝 LMS Endpoints:                   │
+│  📚 Classes | Announcements | Units  │
+│  📝 Assignments | Submissions        │
+│  👥 Staff | Students | Messages      │
+│  📊 Activity | Meetings | Programs   │
+│  📖 Ebooks | Google Meet              │
+├─────────────────────────────────────┤
+│  ✅ Server is ready                  │
+│  📝 Check /health for status         │
+└─────────────────────────────────────┘
+  `);
+  
+  console.log(`CORS enabled for: http://localhost:3000, https://uelms.com`);
   console.log(`Activity Dashboard endpoints:`);
-  console.log(` GET /api/staff-activity/summary`);
-  console.log(` GET /api/staff-activity/all`);
-  console.log(` GET /api/staff-activity/staff/:staffId`);
-  console.log(` GET /api/staff/:identifier/classes`);
+  console.log(`  GET  /api/staff-activity/summary`);
+  console.log(`  GET  /api/staff-activity/all`);
+  console.log(`  GET  /api/staff-activity/staff/:staffId`);
+  console.log(`  GET  /api/staff/:identifier/classes`);
 });
+
+// Server timeout configuration (from first file)
+server.timeout = 1800000;        // 30 minutes
+server.keepAliveTimeout = 1800000;
+server.headersTimeout = 1810000; // slightly higher
+
+// ============================================
+// GRACEFUL SHUTDOWN (from first file)
+// ============================================
+process.on('SIGTERM', () => {
+  console.log('👋 SIGTERM received: closing HTTP server...');
+  server.close(() => {
+    console.log('🔴 HTTP server closed');
+    mongoose.connection.close()
+      .then(() => {
+        console.log('🔴 MongoDB connection closed');
+        process.exit(0);
+      })
+      .catch((err) => {
+        console.error('❌ Error closing MongoDB connection:', err);
+        process.exit(1);
+      });
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('👋 SIGINT received: closing HTTP server...');
+  server.close(() => {
+    console.log('🔴 HTTP server closed');
+    mongoose.connection.close()
+      .then(() => {
+        console.log('🔴 MongoDB connection closed');
+        process.exit(0);
+      })
+      .catch((err) => {
+        console.error('❌ Error closing MongoDB connection:', err);
+        process.exit(1);
+      });
+  });
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('💥 Uncaught Exception:', err);
+  server.close(() => {
+    mongoose.connection.close()
+      .then(() => process.exit(1))
+      .catch(() => process.exit(1));
+  });
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('💥 Unhandled Rejection:', err);
+  console.error('This rejection was not handled, but server continues running');
+});
+
+module.exports = app;
