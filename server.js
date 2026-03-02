@@ -7,8 +7,6 @@ const path = require('path');
 const fs = require('fs');
 const admin = require('firebase-admin');
 
-
-
 // Load environment variables
 dotenv.config();
 
@@ -77,119 +75,6 @@ setInterval(() => {
     });
   }
 }, 3600000); // Run every hour
-
-
-// ============================================================
-//  TEMPORARY MIGRATION ROUTE — Add to server.js
-//  
-//  1. Add this route to server.js
-//  2. Deploy to Render
-//  3. Open in browser: https://your-render-url.com/api/fix-file-tokens?secret=uelms2024
-//  4. Wait for JSON response showing results
-//  5. Remove this route and redeploy
-// ============================================================
-
-app.get('/api/fix-file-tokens', async (req, res) => {
-  // 🔐 Simple secret key so random people can't trigger it
-  if (req.query.secret !== 'uelms2024') {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  const crypto = require('crypto');
-  const BUCKET = process.env.FIREBASE_STORAGE_BUCKET;
-
-  const isExpiredSignedUrl = (url) => {
-    if (!url) return false;
-    return (
-      url.includes('GoogleAccessId') ||
-      url.includes('Signature=') ||
-      url.includes('Expires=') ||
-      url.includes('X-Goog-Signature') ||
-      (url.startsWith('https://storage.googleapis.com/') &&
-        !url.includes('firebasestorage.googleapis.com'))
-    );
-  };
-
-  const needsTokenUrl = (url) => {
-    if (!url) return false;
-    return (
-      isExpiredSignedUrl(url) ||
-      (url.includes('firebasestorage.googleapis.com') && !url.includes('token='))
-    );
-  };
-
-  const extractPathFromSignedUrl = (url) => {
-    try {
-      const withoutScheme = url.replace('https://storage.googleapis.com/', '');
-      if (withoutScheme.startsWith(BUCKET + '/')) {
-        return withoutScheme.slice(BUCKET.length + 1).split('?')[0];
-      }
-    } catch (e) {}
-    return null;
-  };
-
-  const results = { fixed: 0, skipped: 0, failed: 0, errors: [] };
-
-  try {
-    const File = require('./models/files');
-    const files = await File.find({ isUploadedFile: true });
-    const bucket = admin.storage().bucket();
-
-    for (const file of files) {
-      const url = file.url;
-
-      if (!needsTokenUrl(url) && file.filePath) {
-        results.skipped++;
-        continue;
-      }
-
-      const filePath = file.filePath || extractPathFromSignedUrl(url);
-
-      if (!filePath) {
-        results.failed++;
-        results.errors.push(`No path: ${file.name || file._id}`);
-        continue;
-      }
-
-      try {
-        const fileRef = bucket.file(filePath);
-        const [exists] = await fileRef.exists();
-
-        if (!exists) {
-          results.failed++;
-          results.errors.push(`Not in Firebase: ${filePath}`);
-          continue;
-        }
-
-        const downloadToken = crypto.randomBytes(16).toString('hex');
-        await fileRef.setMetadata({
-          metadata: { firebaseStorageDownloadTokens: downloadToken }
-        });
-
-        const newUrl = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/${encodeURIComponent(filePath)}?alt=media&token=${downloadToken}`;
-
-        await File.findByIdAndUpdate(file._id, {
-          url: newUrl,
-          filePath: filePath
-        });
-
-        results.fixed++;
-      } catch (err) {
-        results.failed++;
-        results.errors.push(`${file.name}: ${err.message}`);
-      }
-    }
-
-    res.json({
-      success: true,
-      message: '🎉 Migration complete! All old files now have permanent URLs.',
-      results
-    });
-
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 
 // ============================================
 // MIDDLEWARE CONFIGURATION (merged from both files)
@@ -1573,6 +1458,112 @@ app.delete('/api/users', async (req, res) => {
       success: false,
       error: 'Failed to delete user: ' + err.message
     });
+  }
+});
+
+// ============================================
+// TEMPORARY MIGRATION ROUTE
+// After running once, remove this and redeploy
+// Usage: https://your-render-url.com/api/fix-file-tokens?secret=uelms2024
+// ============================================
+app.get('/api/fix-file-tokens', async (req, res) => {
+  if (req.query.secret !== 'uelms2024') {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const crypto = require('crypto');
+  const BUCKET = process.env.FIREBASE_STORAGE_BUCKET;
+
+  const isExpiredSignedUrl = (url) => {
+    if (!url) return false;
+    return (
+      url.includes('GoogleAccessId') ||
+      url.includes('Signature=') ||
+      url.includes('Expires=') ||
+      url.includes('X-Goog-Signature') ||
+      (url.startsWith('https://storage.googleapis.com/') &&
+        !url.includes('firebasestorage.googleapis.com'))
+    );
+  };
+
+  const needsTokenUrl = (url) => {
+    if (!url) return false;
+    return (
+      isExpiredSignedUrl(url) ||
+      (url.includes('firebasestorage.googleapis.com') && !url.includes('token='))
+    );
+  };
+
+  const extractPathFromSignedUrl = (url) => {
+    try {
+      const withoutScheme = url.replace('https://storage.googleapis.com/', '');
+      if (withoutScheme.startsWith(BUCKET + '/')) {
+        return withoutScheme.slice(BUCKET.length + 1).split('?')[0];
+      }
+    } catch (e) {}
+    return null;
+  };
+
+  const results = { fixed: 0, skipped: 0, failed: 0, errors: [] };
+
+  try {
+    const File = require('./models/files');
+    const files = await File.find({ isUploadedFile: true });
+    const bucket = admin.storage().bucket();
+
+    for (const file of files) {
+      const url = file.url;
+
+      if (!needsTokenUrl(url) && file.filePath) {
+        results.skipped++;
+        continue;
+      }
+
+      const filePath = file.filePath || extractPathFromSignedUrl(url);
+
+      if (!filePath) {
+        results.failed++;
+        results.errors.push(`No path: ${file.name || file._id}`);
+        continue;
+      }
+
+      try {
+        const fileRef = bucket.file(filePath);
+        const [exists] = await fileRef.exists();
+
+        if (!exists) {
+          results.failed++;
+          results.errors.push(`Not in Firebase: ${filePath}`);
+          continue;
+        }
+
+        const downloadToken = crypto.randomBytes(16).toString('hex');
+        await fileRef.setMetadata({
+          metadata: { firebaseStorageDownloadTokens: downloadToken }
+        });
+
+        const newUrl = `https://firebasestorage.googleapis.com/v0/b/${BUCKET}/o/${encodeURIComponent(filePath)}?alt=media&token=${downloadToken}`;
+
+        await File.findByIdAndUpdate(file._id, {
+          url: newUrl,
+          filePath: filePath
+        });
+
+        results.fixed++;
+      } catch (err) {
+        results.failed++;
+        results.errors.push(`${file.name}: ${err.message}`);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: '🎉 Migration complete! All old files now have permanent URLs.',
+      results
+    });
+
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
