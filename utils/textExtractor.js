@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-// Try different import methods for pdf-parse
+// Try different import methods for pdf-parse with better error handling
 let pdfParse;
 try {
   // Standard require
@@ -18,8 +18,115 @@ try {
   }
 }
 
+// Add fallback PDF parser for problematic PDFs
+let pdfParseFallback;
+try {
+  // Try to load pdf-parse-fallback if available
+  pdfParseFallback = require('pdf-parse-fallback');
+  console.log('✅ pdf-parse-fallback loaded successfully');
+} catch (e) {
+  pdfParseFallback = null;
+}
+
 const mammoth = require('mammoth');
 console.log('✅ mammoth loaded successfully');
+
+// ─── Enhanced PDF extraction with fallback ─────────────────────────────────────
+const extractPDFText = async (dataBuffer) => {
+  if (!pdfParse) {
+    throw new Error('pdf-parse library is not available. Please install it with: npm install pdf-parse');
+  }
+  
+  console.log(`📄 PDF buffer size: ${dataBuffer.length} bytes`);
+  
+  // First attempt with standard parser
+  try {
+    const data = await pdfParse(dataBuffer);
+    if (data.text && data.text.length > 0) {
+      console.log(`✅ PDF extracted successfully with standard parser: ${data.text.length} characters`);
+      return data.text || '';
+    }
+  } catch (err) {
+    console.warn(`⚠️ Standard PDF parser failed: ${err.message}`);
+    
+    // If it's the XRef error, try alternative parsing options
+    if (err.message.includes('bad XRef entry') || err.message.includes('xref')) {
+      console.log('🔄 Attempting alternative PDF parsing methods...');
+      
+      // Try with different parsing options
+      try {
+        // Attempt 1: Try with pagerender option to extract text page by page
+        const options = {
+          pagerender: renderPage,
+          max: 0 // No page limit
+        };
+        
+        const data = await pdfParse(dataBuffer, options);
+        if (data.text && data.text.length > 0) {
+          console.log(`✅ PDF extracted with page renderer: ${data.text.length} characters`);
+          return data.text || '';
+        }
+      } catch (err2) {
+        console.warn(`⚠️ Page renderer method failed: ${err2.message}`);
+        
+        // Attempt 2: Try with fallback parser if available
+        if (pdfParseFallback) {
+          try {
+            const data = await pdfParseFallback(dataBuffer);
+            if (data.text && data.text.length > 0) {
+              console.log(`✅ PDF extracted with fallback parser: ${data.text.length} characters`);
+              return data.text || '';
+            }
+          } catch (err3) {
+            console.warn(`⚠️ Fallback parser failed: ${err3.message}`);
+          }
+        }
+        
+        // Attempt 3: Try extracting raw text with different encoding
+        try {
+          const rawText = dataBuffer.toString('utf-8');
+          // Look for text content between PDF markers
+          const textMatches = rawText.match(/\(([^)]{10,})\)/g) || [];
+          if (textMatches.length > 0) {
+            const extractedText = textMatches
+              .map(m => m.substring(1, m.length - 1))
+              .filter(t => t.length > 20)
+              .join(' ');
+            
+            if (extractedText.length > 100) {
+              console.log(`✅ PDF extracted via raw text method: ${extractedText.length} characters`);
+              return extractedText;
+            }
+          }
+        } catch (err4) {
+          console.warn(`⚠️ Raw text extraction failed: ${err4.message}`);
+        }
+      }
+    }
+    
+    // Re-throw the error if all methods fail
+    throw err;
+  }
+  
+  return '';
+};
+
+// Custom page renderer function
+const renderPage = (pageData) => {
+  try {
+    return pageData.getTextContent()
+      .then(textContent => {
+        return textContent.items
+          .map(item => item.str)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+      })
+      .catch(() => '');
+  } catch {
+    return '';
+  }
+};
 
 // ─── Extract raw text ─────────────────────────────────────────────────────────
 const extractText = async (filePath, originalName) => {
@@ -41,23 +148,37 @@ const extractText = async (filePath, originalName) => {
     
     // PDF files
     if (ext === '.pdf') {
-      if (!pdfParse) {
-        throw new Error('pdf-parse library is not available. Please install it with: npm install pdf-parse');
-      }
-      
       const dataBuffer = fs.readFileSync(filePath);
-      console.log(`📄 PDF buffer size: ${dataBuffer.length} bytes`);
-      
-      const data = await pdfParse(dataBuffer);
-      console.log(`✅ PDF extracted: ${data.text?.length || 0} characters`);
-      return data.text || '';
+      return await extractPDFText(dataBuffer);
     }
     
     // DOCX files
     if (ext === '.docx') {
-      const result = await mammoth.extractRawText({ path: filePath });
-      console.log(`✅ DOCX extracted: ${result.value?.length || 0} characters`);
-      return result.value || '';
+      try {
+        const result = await mammoth.extractRawText({ path: filePath });
+        if (result.value && result.value.length > 0) {
+          console.log(`✅ DOCX extracted: ${result.value.length} characters`);
+          return result.value || '';
+        } else {
+          // Try alternative extraction method
+          const buffer = fs.readFileSync(filePath);
+          const altResult = await mammoth.extractRawText({ buffer });
+          console.log(`✅ DOCX extracted via buffer: ${altResult.value.length} characters`);
+          return altResult.value || '';
+        }
+      } catch (docxErr) {
+        console.warn(`⚠️ Standard DOCX extraction failed: ${docxErr.message}`);
+        
+        // Try buffer-based extraction as fallback
+        try {
+          const buffer = fs.readFileSync(filePath);
+          const result = await mammoth.extractRawText({ buffer });
+          console.log(`✅ DOCX extracted via buffer fallback: ${result.value.length} characters`);
+          return result.value || '';
+        } catch (bufferErr) {
+          throw new Error(`DOCX extraction failed: ${bufferErr.message}`);
+        }
+      }
     }
     
     throw new Error(`Unsupported file type: ${ext}. Please upload PDF, DOCX, or TXT files.`);
