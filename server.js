@@ -6,7 +6,6 @@ const dotenv = require('dotenv');
 const path = require('path');
 const fs = require('fs');
 const admin = require('firebase-admin');
-const crypto = require('crypto');
 
 // Load environment variables
 dotenv.config();
@@ -16,104 +15,48 @@ const app = express();
 // At the very top of server.js, after requires
 const dns = require('dns');
 dns.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']); // Google + Cloudflare DNS
-
 // ============================================
-// FIREBASE INITIALIZATION with better error handling
+// FIREBASE INITIALIZATION (from second file)
 // ============================================
-let firebaseInitialized = false;
+const firebaseConfig = {
+  projectId: process.env.FIREBASE_PROJECT_ID,
+  clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+  privateKey: process.env.FIREBASE_PRIVATE_KEY
+    ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+    : undefined,
+};
 
-try {
-  console.log('🔑 Initializing Firebase...');
-  
-  const firebaseConfig = {
-    projectId: process.env.FIREBASE_PROJECT_ID,
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey: process.env.FIREBASE_PRIVATE_KEY
-      ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
-      : undefined,
-  };
-
-  // Validate Firebase config
-  if (!firebaseConfig.projectId) {
-    throw new Error('FIREBASE_PROJECT_ID is missing in .env file');
-  }
-  if (!firebaseConfig.clientEmail) {
-    throw new Error('FIREBASE_CLIENT_EMAIL is missing in .env file');
-  }
-  if (!firebaseConfig.privateKey) {
-    throw new Error('FIREBASE_PRIVATE_KEY is missing in .env file');
-  }
-
-  // Log partial config for debugging (hide sensitive parts)
-  console.log('✅ Firebase Project ID:', firebaseConfig.projectId);
-  console.log('✅ Firebase Client Email:', firebaseConfig.clientEmail);
-  console.log('✅ Firebase Private Key length:', firebaseConfig.privateKey.length, 'characters');
-  console.log('✅ Firebase Private Key starts with:', firebaseConfig.privateKey.substring(0, 30) + '...');
-
-  admin.initializeApp({
-    credential: admin.credential.cert(firebaseConfig),
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'uelms-378db.firebasestorage.app',
-  });
-
-  firebaseInitialized = true;
-  console.log('✅ Firebase Admin SDK initialized successfully');
-
-  // Test Firebase Authentication
-  admin.auth().listUsers(1)
-    .then(() => console.log('✅ Firebase Authentication is working'))
-    .catch(err => console.warn('⚠️ Firebase Authentication test failed:', err.message));
-
-} catch (error) {
-  console.error('❌ Firebase initialization failed:', error.message);
-  console.error('Please check your Firebase service account credentials in .env file');
-  console.error('Make sure FIREBASE_PRIVATE_KEY is properly formatted with \\n for newlines');
-  
-  // Don't exit process, but set flag to handle Firebase operations gracefully
-  firebaseInitialized = false;
+if (!firebaseConfig.projectId || !firebaseConfig.clientEmail || !firebaseConfig.privateKey) {
+  console.error('Missing Firebase configuration variables');
+  process.exit(1);
 }
 
-const bucket = firebaseInitialized ? admin.storage().bucket() : null;
+admin.initializeApp({
+  credential: admin.credential.cert(firebaseConfig),
+  storageBucket: 'uelms-378db.firebasestorage.app',
+});
 
-/**
- * Generate a Firebase Storage URL that works with authentication
- * These URLs are permanent and work with Firebase Auth
- */
-const getFirebaseStorageUrl = (filePath) => {
-  if (!firebaseInitialized || !process.env.FIREBASE_STORAGE_BUCKET) {
-    console.warn('Firebase not initialized or storage bucket missing');
-    return null;
-  }
-  // URL format that works with Firebase Auth tokens
-  return `https://firebasestorage.googleapis.com/v0/b/${process.env.FIREBASE_STORAGE_BUCKET}/o/${encodeURIComponent(filePath)}?alt=media`;
-};
-
-/**
- * Generate a download token and store it in metadata
- * This allows direct access even without auth in some cases
- */
-const generateDownloadToken = () => {
-  return crypto.randomBytes(16).toString('hex');
-};
+const bucket = admin.storage().bucket();
 
 // ============================================
-// DIRECTORY CREATION
+// DIRECTORY CREATION (merged from both files)
 // ============================================
 
-// Ensure uploads directory exists
+// Ensure uploads directory exists (from first file)
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
   console.log('📁 Uploads directory created');
 }
 
-// Create temp directory for file uploads
+// Create temp directory for file uploads (from second file)
 const tempDir = path.join(__dirname, 'temp_uploads');
 if (!fs.existsSync(tempDir)) {
   fs.mkdirSync(tempDir, { recursive: true });
-  console.log('📁 Created temp uploads directory:', tempDir);
+  console.log('Created temp uploads directory:', tempDir);
 }
 
-// Clean up temp files periodically
+// Clean up temp files periodically (from second file)
 setInterval(() => {
   if (fs.existsSync(tempDir)) {
     fs.readdir(tempDir, (err, files) => {
@@ -134,10 +77,11 @@ setInterval(() => {
 }, 3600000); // Run every hour
 
 // ============================================
-// MIDDLEWARE CONFIGURATION
+// MIDDLEWARE CONFIGURATION (merged from both files)
 // ============================================
 
-// CORS configuration
+// CORS configuration (merged from both files)
+// CORS configuration (merged from both files)
 app.use(cors({
   origin: [
     'http://localhost:3000', 
@@ -152,28 +96,28 @@ app.use(cors({
     'Authorization', 
     'X-Requested-With', 
     'Accept',
-    'x-user-id',
-    'x-user-email'
+    'x-user-id',           // Add this
+    'x-user-email'         // Add this
   ],
-  exposedHeaders: ['Content-Disposition'],
+  exposedHeaders: ['Content-Disposition'], // Add this for file downloads
   credentials: true,
   optionsSuccessStatus: 200
 }));
 
-// Body parsing middleware
+// Body parsing middleware (merged from both files - using higher limits)
 app.use(express.json({ limit: '10gb' }));
 app.use(express.urlencoded({ extended: true, limit: '10gb' }));
 
-// Static files
+// Static files (from both files)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ============================================
-// REQUEST LOGGING MIDDLEWARE
+// REQUEST LOGGING MIDDLEWARE (from first file, enhanced)
 // ============================================
 app.use((req, res, next) => {
   console.log(`📡 ${req.method} ${req.url} - ${new Date().toISOString()}`);
   
-  // Set timeout for long requests
+  // Set timeout for long requests (plagiarism checks)
   req.setTimeout(1800000, () => { // 30 minutes
     console.error(`⏰ Request timeout: ${req.method} ${req.url}`);
   });
@@ -192,17 +136,17 @@ app.use((req, res, next) => {
   next();
 });
 
-// Simple logging middleware
+// Simple logging middleware (from second file)
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.path}`);
   next();
 });
 
 // ============================================
-// MONGODB CONNECTION
+// MONGODB CONNECTION (merged from both files)
 // ============================================
 
-// MongoDB Connection with options
+// MongoDB Connection with options (from first file)
 const mongooseOptions = {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -220,14 +164,10 @@ const connectDB = async () => {
 
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
     
-    // Create indexes
-    try {
-      await conn.connection.db.collection('reports').createIndex({ createdAt: -1 });
-      await conn.connection.db.collection('reports').createIndex({ fileName: 1 });
-      console.log('📊 Database indexes created');
-    } catch (indexErr) {
-      console.warn('⚠️ Index creation warning:', indexErr.message);
-    }
+    // Create indexes (from first file)
+    await conn.connection.db.collection('reports').createIndex({ createdAt: -1 });
+    await conn.connection.db.collection('reports').createIndex({ fileName: 1 });
+    console.log('📊 Database indexes created');
     
   } catch (error) {
     console.error('❌ MongoDB Connection Error:', error.message);
@@ -238,7 +178,7 @@ const connectDB = async () => {
 
 connectDB();
 
-// MongoDB listeners
+// MongoDB listeners (from first file)
 mongoose.connection.on('error', err => {
   console.error('❌ MongoDB connection error:', err);
 });
@@ -249,7 +189,7 @@ mongoose.connection.on('disconnected', () => {
 });
 
 // ============================================
-// ROUTE IMPORTS
+// ROUTE IMPORTS (from second file)
 // ============================================
 const classRoutes = require('./routes/classRoutes');
 const announcementRoutes = require('./routes/announcementRoutes');
@@ -267,7 +207,7 @@ const googleMeetAttendanceRoutes = require('./routes/googleMeetAttendance');
 const staffMeetingsRoutes = require('./routes/staffMeetings');
 const ebookRoutes = require('./routes/ebookRoutes');
 
-// Model imports
+// Model imports (from second file)
 require('./models/files');
 require('./models/unit');
 require('./models/DailyUpload');
@@ -277,7 +217,10 @@ const Class = require('./models/Class');
 const StaffActivity = require('./models/StaffActivity');
 
 // ============================================
-// API ROUTES - Plagiarism detector
+// API ROUTES (from first file - plagiarism detector)
+// ============================================
+// ============================================
+// API ROUTES (from first file - plagiarism detector)
 // ============================================
 try {
   // Add middleware to extract user info from headers for plagiarism routes
@@ -300,7 +243,7 @@ try {
 }
 
 // ============================================
-// API ROUTES - LMS
+// API ROUTES (from second file - LMS)
 // ============================================
 app.use('/api/classes', classRoutes);
 app.use('/api/announcements', announcementRoutes);
@@ -319,7 +262,7 @@ app.use('/api/staff-meetings', staffMeetingsRoutes);
 app.use(ebookRoutes); 
 
 // ============================================
-// API STATUS ENDPOINTS
+// API STATUS ENDPOINTS (from first file)
 // ============================================
 
 // API Key status endpoint
@@ -341,10 +284,6 @@ app.get('/api/status', (req, res) => {
     crossref: {
       enabled: !!process.env.CROSSREF_EMAIL,
       emailPresent: !!process.env.CROSSREF_EMAIL
-    },
-    firebase: {
-      enabled: firebaseInitialized,
-      bucketPresent: !!process.env.FIREBASE_STORAGE_BUCKET
     }
   };
   
@@ -362,7 +301,7 @@ app.get('/api/status', (req, res) => {
   });
 });
 
-// Health check
+// Health check (from first file - enhanced)
 app.get('/health', (req, res) => {
   res.json({ 
     success: true,
@@ -370,13 +309,12 @@ app.get('/health', (req, res) => {
     status: 'OK', 
     timestamp: new Date(),
     mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    firebase: firebaseInitialized ? 'initialized' : 'failed',
     uptime: process.uptime(),
     memory: process.memoryUsage()
   });
 });
 
-// Health check
+// Health check (from second file)
 app.get('/api/health', (req, res) => {
   res.status(200).json({
     success: true,
@@ -384,18 +322,19 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     services: {
       mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-      firebase: firebaseInitialized ? 'initialized' : 'failed'
+      firebase: 'initialized'
     }
   });
 });
 
-// Root endpoint
+// Root endpoint (from first file - enhanced)
 app.get('/', (req, res) => {
   res.json({ 
     success: true,
     message: '📚 Combined API Server', 
     version: '2.0.0',
     endpoints: {
+      // Plagiarism detector endpoints
       plagiarism: {
         health: '/health',
         status: '/api/status',
@@ -407,6 +346,7 @@ app.get('/', (req, res) => {
         download: '/api/reports/download/:id (GET)',
         delete: '/api/reports/:id (DELETE)'
       },
+      // LMS endpoints
       lms: {
         classes: '/api/classes',
         announcements: '/api/announcements',
@@ -430,14 +370,14 @@ app.get('/', (req, res) => {
       serpapi: !!process.env.SERPAPI_KEY ? '✅ Configured' : '❌ Not configured',
       core: !!process.env.CORE_API_KEY ? '✅ Configured' : '❌ Not configured',
       crossref: !!process.env.CROSSREF_EMAIL ? '✅ Configured' : '❌ Not configured',
-      firebase: firebaseInitialized ? '✅ Configured' : '❌ Failed'
+      firebase: '✅ Configured'
     },
     timestamp: new Date()
   });
 });
 
 // ============================================
-// STAFF AND STUDENT MANAGEMENT ENDPOINTS
+// STAFF AND STUDENT MANAGEMENT ENDPOINTS (from second file)
 // ============================================
 
 app.get('/api/staff-with-passwords', async (req, res) => {
@@ -448,24 +388,16 @@ app.get('/api/staff-with-passwords', async (req, res) => {
     
     for (let s of staff) {
       if (s.staffId) {
-        try {
-          const summary = await StaffActivity.getStaffSummary(s.staffId);
-          s.activity = {
-            streams: summary.totalStreams || 0,
-            assignments: summary.totalAssignments || 0,
-            assessments: summary.totalAssessments || 0,
-            visits: summary.totalVisits || 0,
-          };
-        } catch (activityErr) {
-          s.activity = { streams: 0, assignments: 0, assessments: 0, visits: 0 };
-        }
+        const summary = await StaffActivity.getStaffSummary(s.staffId);
+        s.activity = {
+          streams: summary.totalStreams || 0,
+          assignments: summary.totalAssignments || 0,
+          assessments: summary.totalAssessments || 0,
+          visits: summary.totalVisits || 0,
+        };
         
-        try {
-          const classes = await Class.find({ staffId: s.staffId }).select('name subject section createdAt').lean();
-          s.classes = classes || [];
-        } catch (classErr) {
-          s.classes = [];
-        }
+        const classes = await Class.find({ staffId: s.staffId }).select('name subject section createdAt').lean();
+        s.classes = classes || [];
       } else {
         s.activity = { streams: 0, assignments: 0, assessments: 0, visits: 0 };
         s.classes = [];
@@ -656,39 +588,33 @@ app.post('/api/staff-with-password', async (req, res) => {
       });
     }
     
-    if (firebaseInitialized) {
-      try {
-        firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
-        console.log('Firebase user already exists:', firebaseUser.uid);
-      } catch (firebaseErr) {
-        if (firebaseErr.code === 'auth/user-not-found') {
-          try {
-            firebaseUser = await admin.auth().createUser({
-              email: lowerEmail,
-              password: tempPassword,
-              displayName: name.trim(),
-              emailVerified: false,
-              disabled: false
+    try {
+      firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
+      console.log('Firebase user already exists:', firebaseUser.uid);
+    } catch (firebaseErr) {
+      if (firebaseErr.code === 'auth/user-not-found') {
+        try {
+          firebaseUser = await admin.auth().createUser({
+            email: lowerEmail,
+            password: tempPassword,
+            displayName: name.trim(),
+            emailVerified: false,
+            disabled: false
+          });
+          console.log('Firebase user created:', firebaseUser.uid);
+        } catch (createErr) {
+          console.error('Error creating Firebase user:', createErr);
+          if (createErr.code === 'auth/email-already-exists') {
+            return res.status(400).json({ 
+              success: false,
+              error: 'Email already exists in Firebase' 
             });
-            console.log('Firebase user created:', firebaseUser.uid);
-          } catch (createErr) {
-            console.error('Error creating Firebase user:', createErr);
-            if (createErr.code === 'auth/email-already-exists') {
-              return res.status(400).json({ 
-                success: false,
-                error: 'Email already exists in Firebase' 
-              });
-            }
-            throw createErr;
           }
-        } else {
-          throw firebaseErr;
+          throw createErr;
         }
+      } else {
+        throw firebaseErr;
       }
-    } else {
-      console.warn('Firebase not initialized, skipping Firebase user creation');
-      // Create a mock Firebase UID for development
-      firebaseUser = { uid: `mock_${Date.now()}_${Math.random().toString(36).substring(7)}` };
     }
     
     const staff = new Staff({ 
@@ -714,7 +640,7 @@ app.post('/api/staff-with-password', async (req, res) => {
   } catch (err) {
     console.error('Error adding staff with password:', err);
     
-    if (firebaseUser && firebaseInitialized) {
+    if (firebaseUser) {
       try {
         await admin.auth().deleteUser(firebaseUser.uid);
         console.log('Cleaned up Firebase user after error:', firebaseUser.uid);
@@ -798,38 +724,33 @@ app.post('/api/students-with-password', async (req, res) => {
       });
     }
     
-    if (firebaseInitialized) {
-      try {
-        firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
-        console.log('Firebase user already exists:', firebaseUser.uid);
-      } catch (firebaseErr) {
-        if (firebaseErr.code === 'auth/user-not-found') {
-          try {
-            firebaseUser = await admin.auth().createUser({
-              email: lowerEmail,
-              password: tempPassword,
-              displayName: name.trim(),
-              emailVerified: false,
-              disabled: false
+    try {
+      firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
+      console.log('Firebase user already exists:', firebaseUser.uid);
+    } catch (firebaseErr) {
+      if (firebaseErr.code === 'auth/user-not-found') {
+        try {
+          firebaseUser = await admin.auth().createUser({
+            email: lowerEmail,
+            password: tempPassword,
+            displayName: name.trim(),
+            emailVerified: false,
+            disabled: false
+          });
+          console.log('Firebase user created:', firebaseUser.uid);
+        } catch (createErr) {
+          console.error('Error creating Firebase user:', createErr);
+          if (createErr.code === 'auth/email-already-exists') {
+            return res.status(400).json({ 
+              success: false,
+              error: 'Email already exists in Firebase' 
             });
-            console.log('Firebase user created:', firebaseUser.uid);
-          } catch (createErr) {
-            console.error('Error creating Firebase user:', createErr);
-            if (createErr.code === 'auth/email-already-exists') {
-              return res.status(400).json({ 
-                success: false,
-                error: 'Email already exists in Firebase' 
-              });
-            }
-            throw createErr;
           }
-        } else {
-          throw firebaseErr;
+          throw createErr;
         }
+      } else {
+        throw firebaseErr;
       }
-    } else {
-      console.warn('Firebase not initialized, skipping Firebase user creation');
-      firebaseUser = { uid: `mock_${Date.now()}_${Math.random().toString(36).substring(7)}` };
     }
     
     const student = new Student({ 
@@ -855,7 +776,7 @@ app.post('/api/students-with-password', async (req, res) => {
   } catch (err) {
     console.error('Error adding student with password:', err);
     
-    if (firebaseUser && firebaseInitialized) {
+    if (firebaseUser) {
       try {
         await admin.auth().deleteUser(firebaseUser.uid);
         console.log('Cleaned up Firebase user after error:', firebaseUser.uid);
@@ -893,7 +814,7 @@ app.post('/api/students-with-password', async (req, res) => {
   }
 });
 
-// Enhanced bulk upload endpoint
+// Enhanced bulk upload endpoint - FIXED VERSION (from second file)
 app.post('/api/bulk-users-enhanced', async (req, res) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   
@@ -1018,43 +939,37 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
       let action = 'skipped';
 
       try {
-        // Check Firebase first (if initialized)
-        if (firebaseInitialized) {
-          try {
-            firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
-            console.log(`User ${lowerEmail} exists in Firebase, will update`);
-            action = 'update_firebase';
-          } catch (err) {
-            if (err.code === 'auth/user-not-found') {
-              // Create new Firebase user
-              try {
-                firebaseUser = await admin.auth().createUser({ 
-                  email: lowerEmail, 
-                  password: password,
-                  displayName: name.trim(),
-                  emailVerified: false,
-                  disabled: false
-                });
-                createdFirebaseUsers.push({ uid: firebaseUser.uid, email: lowerEmail });
-                action = 'create_firebase';
-              } catch (createErr) {
-                results.push({ 
-                  row: rowNumber,
-                  email: lowerEmail,
-                  name: name,
-                  success: false, 
-                  error: 'Firebase creation failed: ' + createErr.message 
-                });
-                continue;
-              }
-            } else {
-              throw err;
+        // Check Firebase first
+        try {
+          firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
+          console.log(`User ${lowerEmail} exists in Firebase, will update`);
+          action = 'update_firebase';
+        } catch (err) {
+          if (err.code === 'auth/user-not-found') {
+            // Create new Firebase user
+            try {
+              firebaseUser = await admin.auth().createUser({ 
+                email: lowerEmail, 
+                password: password,
+                displayName: name.trim(),
+                emailVerified: false,
+                disabled: false
+              });
+              createdFirebaseUsers.push({ uid: firebaseUser.uid, email: lowerEmail });
+              action = 'create_firebase';
+            } catch (createErr) {
+              results.push({ 
+                row: rowNumber,
+                email: lowerEmail,
+                name: name,
+                success: false, 
+                error: 'Firebase creation failed: ' + createErr.message 
+              });
+              continue;
             }
+          } else {
+            throw err;
           }
-        } else {
-          console.warn('Firebase not initialized, using mock UID');
-          firebaseUser = { uid: `mock_${Date.now()}_${Math.random().toString(36).substring(7)}` };
-          action = 'mock_created';
         }
 
         // Handle database operations
@@ -1089,7 +1004,7 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
             });
           } else {
             // CREATE NEW STAFF
-            const staffId = firebaseUser.uid;
+            const staffId = `staff_${Date.now().toString().slice(-6)}_${Math.random().toString(36).substr(2, 5)}`;
             const staffData = {
               staffId: staffId,
               name: name.trim(),
@@ -1135,7 +1050,7 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
               action: 'updated'
             });
           } else {
-            const studentId = firebaseUser.uid;
+            const studentId = `student_${Date.now().toString().slice(-6)}_${Math.random().toString(36).substr(2, 5)}`;
             const studentData = {
               studentId: studentId,
               name: name.trim(),
@@ -1169,7 +1084,7 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
         });
         
         // Cleanup Firebase user if created and failed
-        if (action === 'create_firebase' && firebaseUser && firebaseInitialized) {
+        if (action === 'create_firebase' && firebaseUser) {
           try {
             await admin.auth().deleteUser(firebaseUser.uid);
           } catch (cleanupErr) {
@@ -1181,7 +1096,7 @@ app.post('/api/bulk-users-enhanced', async (req, res) => {
 
     // Calculate statistics
     const successCount = results.filter(r => r.success).length;
-    const createdCount = results.filter(r => r.success && (r.action === 'created' || r.action === 'mock_created')).length;
+    const createdCount = results.filter(r => r.success && r.action === 'created').length;
     const updatedCount = results.filter(r => r.success && r.action === 'updated').length;
     
     console.log(`Enhanced bulk upload completed: ${successCount}/${users.length} successful`);
@@ -1265,32 +1180,28 @@ app.post('/api/bulk-users-with-passwords', async (req, res) => {
       let firebaseUser = null;
 
       try {
-        if (firebaseInitialized) {
-          try {
-            firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
-            console.log('Firebase user already exists:', firebaseUser.uid);
-          } catch (err) {
-            if (err.code === 'auth/user-not-found') {
-              try {
-                firebaseUser = await admin.auth().createUser({ 
-                  email: lowerEmail, 
-                  password,
-                  displayName: name,
-                  emailVerified: false,
-                  disabled: false
-                });
-                createdFirebaseUsers.push({ uid: firebaseUser.uid, email: lowerEmail });
-                console.log('Firebase user created:', firebaseUser.uid);
-              } catch (createErr) {
-                results.push({ email: lowerEmail, success: false, error: 'Firebase creation failed: ' + createErr.message });
-                continue;
-              }
-            } else {
-              throw err;
+        try {
+          firebaseUser = await admin.auth().getUserByEmail(lowerEmail);
+          console.log('Firebase user already exists:', firebaseUser.uid);
+        } catch (err) {
+          if (err.code === 'auth/user-not-found') {
+            try {
+              firebaseUser = await admin.auth().createUser({ 
+                email: lowerEmail, 
+                password,
+                displayName: name,
+                emailVerified: false,
+                disabled: false
+              });
+              createdFirebaseUsers.push({ uid: firebaseUser.uid, email: lowerEmail });
+              console.log('Firebase user created:', firebaseUser.uid);
+            } catch (createErr) {
+              results.push({ email: lowerEmail, success: false, error: 'Firebase creation failed: ' + createErr.message });
+              continue;
             }
+          } else {
+            throw err;
           }
-        } else {
-          firebaseUser = { uid: `mock_${Date.now()}_${Math.random().toString(36).substring(7)}` };
         }
 
         if (type === 'staff') {
@@ -1338,7 +1249,7 @@ app.post('/api/bulk-users-with-passwords', async (req, res) => {
         console.error(`Error creating user ${lowerEmail}:`, err.message);
         results.push({ email: lowerEmail, success: false, error: err.message });
         
-        if (firebaseUser && !createdFirebaseUsers.some(u => u.uid === firebaseUser.uid) && firebaseInitialized) {
+        if (firebaseUser && !createdFirebaseUsers.some(u => u.uid === firebaseUser.uid)) {
           try {
             await admin.auth().deleteUser(firebaseUser.uid);
           } catch (cleanupErr) {
@@ -1348,7 +1259,7 @@ app.post('/api/bulk-users-with-passwords', async (req, res) => {
       }
     }
 
-    if (results.some(r => !r.success) && createdFirebaseUsers.length > 0 && firebaseInitialized) {
+    if (results.some(r => !r.success) && createdFirebaseUsers.length > 0) {
       console.log('Cleaning up Firebase users due to errors...');
       for (const fbUser of createdFirebaseUsers) {
         const correspondingResult = results.find(r => r.email === fbUser.email);
@@ -1551,7 +1462,10 @@ app.delete('/api/users', async (req, res) => {
 });
 
 // ============================================
-// 404 HANDLER
+// 404 HANDLER (from both files, merged)
+// ============================================
+// ============================================
+// 404 HANDLER (from both files, merged)
 // ============================================
 // Catch-all route for undefined routes
 app.use((req, res) => {
@@ -1589,7 +1503,7 @@ app.use((req, res) => {
 });
 
 // ============================================
-// ERROR HANDLING MIDDLEWARE
+// ERROR HANDLING MIDDLEWARE (from first file, enhanced)
 // ============================================
 app.use((err, req, res, next) => {
   console.error('❌ Server Error:', err.stack);
@@ -1616,7 +1530,7 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================
-// SERVER INITIALIZATION
+// SERVER INITIALIZATION (merged from both files)
 // ============================================
 const PORT = process.env.PORT || 5000;
 
@@ -1637,7 +1551,7 @@ const server = app.listen(PORT, () => {
     CORE: !!process.env.CORE_API_KEY,
     Crossref: !!process.env.CROSSREF_EMAIL
   }).filter(([_, v]) => v).map(([k]) => k).join(', ') || 'None'}
-│  🔥 Firebase: ${firebaseInitialized ? '✅ Configured' : '❌ Failed'}
+│  🔥 Firebase: ✅ Configured
 ├─────────────────────────────────────┤
 │  📝 LMS Endpoints:                   │
 │  📚 Classes | Announcements | Units  │
@@ -1659,13 +1573,13 @@ const server = app.listen(PORT, () => {
   console.log(`  GET  /api/staff/:identifier/classes`);
 });
 
-// Server timeout configuration
+// Server timeout configuration (from first file)
 server.timeout = 1800000;        // 30 minutes
 server.keepAliveTimeout = 1800000;
 server.headersTimeout = 1810000; // slightly higher
 
 // ============================================
-// GRACEFUL SHUTDOWN
+// GRACEFUL SHUTDOWN (from first file)
 // ============================================
 process.on('SIGTERM', () => {
   console.log('👋 SIGTERM received: closing HTTP server...');

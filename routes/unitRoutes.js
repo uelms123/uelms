@@ -5,7 +5,6 @@ const path = require('path');
 const admin = require('firebase-admin');
 const { getStorage } = require('firebase-admin/storage');
 const fs = require('fs');
-const crypto = require('crypto'); // Add this import
 
 const Unit = require('../models/unit');
 const File = require('../models/files');
@@ -33,12 +32,7 @@ const formatFileSize = (bytes) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
-// Generate download token for permanent URLs
-const generateDownloadToken = () => {
-  return crypto.randomBytes(16).toString('hex');
-};
-
-// ✅ DAILY LIMIT CHECK
+// ✅ DAILY LIMIT CHECK (New Feature)
 const checkDailyLimit = async (uploadSize) => {
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
@@ -129,7 +123,7 @@ const uploadMiddleware = (req, res, next) => {
    FIREBASE UPLOAD HELPER FUNCTION
 ===================================================== */
 
-const uploadToFirebase = async (localFilePath, destinationPath, contentType, metadata = {}) => {
+const uploadToFirebase = async (localFilePath, destinationPath, contentType) => {
   const bucket = getStorage().bucket();
   
   return new Promise((resolve, reject) => {
@@ -138,22 +132,11 @@ const uploadToFirebase = async (localFilePath, destinationPath, contentType, met
     }
 
     const firebaseFile = bucket.file(destinationPath);
-    
-    // Generate a download token for permanent access
-    const downloadToken = generateDownloadToken();
-    
     const writeStream = firebaseFile.createWriteStream({
       metadata: {
-        contentType: contentType,
-        metadata: {
-          firebaseStorageDownloadTokens: downloadToken,
-          uploadedAt: new Date().toISOString(),
-          originalName: path.basename(localFilePath),
-          ...metadata // Add any additional metadata
-        }
+        contentType: contentType
       },
-      resumable: true,
-      validation: 'md5'
+      resumable: false
     });
 
     const readStream = fs.createReadStream(localFilePath);
@@ -165,27 +148,16 @@ const uploadToFirebase = async (localFilePath, destinationPath, contentType, met
       .on('finish', async () => {
         try {
           // Clean up temp file
-          if (fs.existsSync(localFilePath)) {
-            fs.unlinkSync(localFilePath);
-          }
+          fs.unlinkSync(localFilePath);
           
-          // Generate permanent URLs
-          const storageUrl = `https://firebasestorage.googleapis.com/v0/b/${process.env.FIREBASE_STORAGE_BUCKET}/o/${encodeURIComponent(destinationPath)}?alt=media`;
-          
-          // URL with download token for authenticated access
-          const authUrl = `${storageUrl}&token=${downloadToken}`;
-          
-          // Alternative direct URL
-          const directUrl = `https://storage.googleapis.com/${process.env.FIREBASE_STORAGE_BUCKET}/${encodeURIComponent(destinationPath)}`;
-          
-          resolve({ 
-            url: authUrl, // Primary URL - works with Firebase Auth
-            directUrl: directUrl, // Alternative URL
-            downloadToken: downloadToken,
-            filePath: destinationPath,
-            fileName: path.basename(destinationPath) 
+          // Generate signed URL
+          const [url] = await firebaseFile.getSignedUrl({
+            action: 'read',
+            expires: '03-01-2500',
           });
+          resolve({ url, fileName: path.basename(destinationPath) });
         } catch (urlError) {
+          // Clean up temp file even if URL generation fails
           if (fs.existsSync(localFilePath)) {
             fs.unlinkSync(localFilePath);
           }
@@ -300,20 +272,13 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
 
       const originalName = req.file.originalname;
       const ext = path.extname(originalName);
-      const timestamp = Date.now();
-      const randomStr = Math.random().toString(36).slice(2);
-      const firebasePath = `units/${unitId}/files/${timestamp}-${randomStr}${ext}`;
+      const firebasePath = `units/${unitId}/files/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
       
-      // Upload to Firebase with metadata
+      // Upload to Firebase using streaming
       const uploadResult = await uploadToFirebase(
         req.file.path, 
         firebasePath, 
-        req.file.mimetype,
-        {
-          unitId: unitId,
-          uploadedBy: uploadedBy || unit.createdBy || 'system',
-          fileName: fileName
-        }
+        req.file.mimetype
       );
 
       const isText =
@@ -324,11 +289,7 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
       // For text files, read content
       let fileContent = null;
       if (isText && fs.existsSync(req.file.path)) {
-        try {
-          fileContent = fs.readFileSync(req.file.path, 'utf8');
-        } catch (readErr) {
-          console.error('Error reading text file:', readErr);
-        }
+        fileContent = fs.readFileSync(req.file.path, 'utf8');
       }
 
       fileData = new File({
@@ -341,10 +302,8 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
         isUploadedFile: true,
         isNotes: false,
         isLink: false,
-        filePath: firebasePath,
+        filePath: '',
         url: uploadResult.url,
-        directUrl: uploadResult.directUrl,
-        downloadToken: uploadResult.downloadToken,
         uploadedBy: uploadedBy || unit.createdBy,
         uploadedByEmail: uploadedByEmail || unit.createdByEmail,
         unitId,
@@ -366,8 +325,6 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
         isLink: false,
         filePath: '',
         url: '',
-        directUrl: '',
-        downloadToken: null,
         uploadedBy: uploadedBy || unit.createdBy,
         uploadedByEmail: uploadedByEmail || unit.createdByEmail,
         unitId,
@@ -391,8 +348,6 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
         isLink: true,
         filePath: '',
         url: linkUrl,
-        directUrl: linkUrl,
-        downloadToken: null,
         uploadedBy: uploadedBy || unit.createdBy,
         uploadedByEmail: uploadedByEmail || unit.createdByEmail,
         unitId,
@@ -410,17 +365,12 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
   } catch (err) {
     // Clean up temp file if it exists
     if (req.file && req.file.path && fs.existsSync(req.file.path)) {
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (unlinkErr) {
-        console.error('Error cleaning up temp file:', unlinkErr);
-      }
+      fs.unlinkSync(req.file.path);
     }
     
     if (err.message.includes('Daily upload limit')) {
       return res.status(400).json({ error: err.message });
     }
-    console.error('Error adding file:', err);
     res.status(500).json({ error: 'Failed to add file', details: err.message });
   }
 });
@@ -433,13 +383,8 @@ router.get('/files/:fileId', async (req, res) => {
       return res.status(404).json({ error: 'File not found' });
     }
 
-    if (file.isUploadedFile && (file.url || file.directUrl)) {
-      return res.json({ 
-        url: file.url || file.directUrl, 
-        name: file.name, 
-        type: file.type,
-        filePath: file.filePath
-      });
+    if (file.isUploadedFile && file.url) {
+      return res.json({ url: file.url, name: file.name, type: file.type });
     }
 
     if (file.isNotes || file.isLink) {
@@ -493,8 +438,6 @@ router.put('/:unitId', async (req, res) => {
           isLink: false,
           filePath: '',
           url: '',
-          directUrl: '',
-          downloadToken: null,
           uploadedBy: unit.createdBy,
           uploadedByEmail: unit.createdByEmail,
           unitId: unitId
@@ -516,7 +459,7 @@ router.put('/:unitId', async (req, res) => {
 router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, res) => {
   try {
     const { unitId, fileId } = req.params;
-    const { fileName, notesContent, fileType, linkUrl, uploadedBy, uploadedByEmail } = req.body;
+    const { fileName, notesContent, fileType, linkUrl } = req.body;
 
     if (!fileName) {
       return res.status(400).json({ error: 'File name is required' });
@@ -535,22 +478,15 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
     file.title = fileName;
     file.lastModified = new Date().toLocaleDateString();
 
+    const bucket = getStorage().bucket();
+
     if (fileType === 'upload' && req.file) {
       // 🔐 DAILY LIMIT ENFORCEMENT
       await checkDailyLimit(req.file.size);
 
       // Delete old file from Firebase if it exists
-      if (file.filePath) {
+      if (file.url) {
         try {
-          const bucket = getStorage().bucket();
-          const oldFileRef = bucket.file(file.filePath);
-          await oldFileRef.delete();
-        } catch (deleteErr) {
-          console.log('Could not delete old file:', deleteErr.message);
-        }
-      } else if (file.url) {
-        try {
-          const bucket = getStorage().bucket();
           const urlObj = new URL(file.url);
           const filePath = decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
           const oldFileRef = bucket.file(filePath);
@@ -561,22 +497,14 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
       }
 
       const originalName = req.file.originalname;
-      const ext = path.extname(originalName);
-      const timestamp = Date.now();
-      const randomStr = Math.random().toString(36).slice(2);
-      const firebasePath = `units/${unitId}/files/${timestamp}-${randomStr}${ext}`;
+      const fileExtension = path.extname(originalName);
+      const firebaseFileName = `units/${unitId}/files/${Date.now()}-${Math.random().toString(36).slice(2)}${fileExtension}`;
       
-      // Upload to Firebase with metadata
+      // Upload to Firebase using streaming
       const uploadResult = await uploadToFirebase(
         req.file.path, 
-        firebasePath, 
-        req.file.mimetype,
-        {
-          unitId: unitId,
-          uploadedBy: uploadedBy || unit.createdBy || 'system',
-          fileName: fileName,
-          isUpdate: true
-        }
+        firebaseFileName, 
+        req.file.mimetype
       );
 
       const isTextFile =
@@ -586,11 +514,7 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
 
       let fileContent = null;
       if (isTextFile && fs.existsSync(req.file.path)) {
-        try {
-          fileContent = fs.readFileSync(req.file.path, 'utf8');
-        } catch (readErr) {
-          console.error('Error reading text file:', readErr);
-        }
+        fileContent = fs.readFileSync(req.file.path, 'utf8');
       }
 
       file.name = originalName;
@@ -600,11 +524,7 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
       file.isUploadedFile = true;
       file.isNotes = false;
       file.isLink = false;
-      file.filePath = firebasePath;
       file.url = uploadResult.url;
-      file.directUrl = uploadResult.directUrl;
-      file.downloadToken = uploadResult.downloadToken;
-      
     } else if (fileType === 'notes' && notesContent) {
       const blob = Buffer.from(notesContent);
       file.name = fileName + '.txt';
@@ -614,11 +534,7 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
       file.isUploadedFile = false;
       file.isNotes = true;
       file.isLink = false;
-      file.filePath = '';
       file.url = '';
-      file.directUrl = '';
-      file.downloadToken = null;
-      
     } else if (fileType === 'link' && linkUrl) {
       if (!linkUrl.match(/^https?:\/\/[^\s/$.?#].[^\s]*$/)) {
         return res.status(400).json({ error: 'Invalid URL format' });
@@ -630,11 +546,7 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
       file.isUploadedFile = false;
       file.isNotes = false;
       file.isLink = true;
-      file.filePath = '';
       file.url = linkUrl;
-      file.directUrl = linkUrl;
-      file.downloadToken = null;
-      
     } else {
       return res.status(400).json({ error: 'Invalid file, notes content, or link URL' });
     }
@@ -645,17 +557,12 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
   } catch (err) {
     // Clean up temp file if it exists
     if (req.file && req.file.path && fs.existsSync(req.file.path)) {
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (unlinkErr) {
-        console.error('Error cleaning up temp file:', unlinkErr);
-      }
+      fs.unlinkSync(req.file.path);
     }
     
     if (err.message.includes('Daily upload limit')) {
       return res.status(400).json({ error: err.message });
     }
-    console.error('Error updating file:', err);
     res.status(500).json({ error: 'Failed to update file', details: err.message });
   }
 });
@@ -673,19 +580,14 @@ router.delete('/:unitId', async (req, res) => {
     const bucket = getStorage().bucket();
 
     for (const file of unit.files) {
-      if (file.isUploadedFile) {
+      if (file.isUploadedFile && file.url) {
         try {
-          // Try to delete using filePath first (more reliable)
-          if (file.filePath) {
-            await bucket.file(file.filePath).delete();
-          } else if (file.url) {
-            const urlObj = new URL(file.url);
-            const filePath = decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
-            await bucket.file(filePath).delete();
-          }
+          const urlObj = new URL(file.url);
+          const filePath = decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
+          const fileRef = bucket.file(filePath);
+          await fileRef.delete();
         } catch (err) {
-          console.log(`Could not delete file from storage: ${err.message}`);
-          // Continue with other files even if one fails
+          // Ignore delete errors
         }
       }
       await File.findByIdAndDelete(file._id);
@@ -694,7 +596,6 @@ router.delete('/:unitId', async (req, res) => {
     await Unit.findByIdAndDelete(unitId);
     res.json({ message: 'Unit deleted successfully' });
   } catch (err) {
-    console.error('Error deleting unit:', err);
     res.status(500).json({ error: 'Failed to delete unit', details: err.message });
   }
 });
@@ -714,31 +615,24 @@ router.delete('/:unitId/files/:fileId', async (req, res) => {
       return res.status(404).json({ error: 'File not found' });
     }
 
-    if (file.isUploadedFile) {
+    if (file.isUploadedFile && file.url) {
       const bucket = getStorage().bucket();
       try {
-        // Try to delete using filePath first (more reliable)
-        if (file.filePath) {
-          await bucket.file(file.filePath).delete();
-        } else if (file.url) {
-          const urlObj = new URL(file.url);
-          const filePath = decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
-          await bucket.file(filePath).delete();
-        }
+        const urlObj = new URL(file.url);
+        const filePath = decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
+        const fileRef = bucket.file(filePath);
+        await fileRef.delete();
       } catch (err) {
-        console.log(`Could not delete file from storage: ${err.message}`);
-        // Continue even if storage deletion fails
+        // Ignore delete errors
       }
     }
 
     unit.files = unit.files.filter((f) => f.toString() !== fileId);
     await unit.save();
     await File.findByIdAndDelete(fileId);
-    
     const populatedUnit = await Unit.findById(unitId).populate('files');
     res.json(populatedUnit);
   } catch (err) {
-    console.error('Error deleting file:', err);
     res.status(500).json({ error: 'Failed to delete file', details: err.message });
   }
 });
