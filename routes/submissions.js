@@ -178,28 +178,49 @@ router.post('/', upload.array('files', 10), async (req, res) => {
     const bucket = getBucket();
     const uploadedFiles = [];
 
-    if (hasFiles) {
-      for (const file of req.files) {
-        const fileName = `submissions/${assignmentId}/${studentId}/${Date.now()}-${Math.round(Math.random() * 1E9)}-${file.originalname}`;
-        const fileRef = bucket.file(fileName);
+// In submissions.js - Update the file upload section
 
-        await fileRef.save(file.buffer, {
-          metadata: { contentType: file.mimetype }
-        });
+if (hasFiles) {
+  for (const file of req.files) {
+    const timestamp = Date.now();
+    const randomStr = Math.round(Math.random() * 1E9);
+    const fileName = `submissions/${assignmentId}/${studentId}/${timestamp}-${randomStr}-${file.originalname}`;
+    const fileRef = bucket.file(fileName);
 
-        const [url] = await fileRef.getSignedUrl({
-          action: 'read',
-          expires: '03-01-2035'
-        });
+    // Generate download token
+    const downloadToken = require('crypto').randomBytes(16).toString('hex');
 
-        uploadedFiles.push({
-          name: file.originalname,
-          type: file.mimetype,
-          size: file.size,
-          url
-        });
+    const metadata = {
+      contentType: file.mimetype,
+      metadata: {
+        firebaseStorageDownloadTokens: downloadToken,
+        uploadedAt: new Date().toISOString(),
+        originalName: file.originalname,
+        studentId: studentId,
+        assignmentId: assignmentId
       }
-    }
+    };
+
+    await fileRef.save(file.buffer, {
+      metadata: metadata,
+      resumable: true
+    });
+
+    // Generate URLs that work with Firebase Auth
+    const storageUrl = `https://firebasestorage.googleapis.com/v0/b/${process.env.FIREBASE_STORAGE_BUCKET}/o/${encodeURIComponent(fileName)}?alt=media`;
+    const directUrl = `https://storage.googleapis.com/${process.env.FIREBASE_STORAGE_BUCKET}/${encodeURIComponent(fileName)}`;
+
+    uploadedFiles.push({
+      name: file.originalname,
+      type: file.mimetype,
+      size: file.size,
+      url: storageUrl, // This will work with Firebase Auth
+      directUrl: directUrl,
+      downloadToken: downloadToken,
+      filePath: fileName
+    });
+  }
+}
 
     let finalAnswer = '';
     if (hasText) {

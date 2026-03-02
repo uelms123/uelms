@@ -4,7 +4,7 @@ const Assignment = require('../models/Assignment');
 const Submission = require('../models/Submission');
 const multer = require('multer');
 const admin = require('firebase-admin');
-const fs = require('fs');
+const crypto = require('crypto'); // Add this import
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -102,27 +102,45 @@ router.post('/', upload.array('attachments', 5), async (req, res) => {
       }
     }
 
+    // Upload attachments to Firebase Storage with permanent URLs
     const uploadedAttachments = [];
     if (req.files && req.files.length > 0) {
       const bucket = getBucket();
       for (const file of req.files) {
-        const fileName = `assignments/${req.body.classId}/${Date.now()}-${Math.round(Math.random() * 1E9)}-${file.originalname}`;
+        const timestamp = Date.now();
+        const randomStr = Math.round(Math.random() * 1E9);
+        const fileName = `assignments/${req.body.classId}/${timestamp}-${randomStr}-${file.originalname}`;
         const fileRef = bucket.file(fileName);
 
+        // Generate permanent download token
+        const downloadToken = crypto.randomBytes(16).toString('hex');
+
+        const metadata = {
+          contentType: file.mimetype,
+          metadata: {
+            firebaseStorageDownloadTokens: downloadToken,
+            uploadedAt: new Date().toISOString(),
+            originalName: file.originalname
+          }
+        };
+
         await fileRef.save(file.buffer, {
-          metadata: { contentType: file.mimetype }
+          metadata: metadata,
+          resumable: true
         });
 
-        const [url] = await fileRef.getSignedUrl({
-          action: 'read',
-          expires: '03-01-2500'
-        });
+        // Generate permanent URLs (these never expire)
+        const storageUrl = `https://firebasestorage.googleapis.com/v0/b/${process.env.FIREBASE_STORAGE_BUCKET}/o/${encodeURIComponent(fileName)}?alt=media`;
+        const directUrl = `https://storage.googleapis.com/${process.env.FIREBASE_STORAGE_BUCKET}/${encodeURIComponent(fileName)}`;
 
         uploadedAttachments.push({
           name: file.originalname,
           type: file.mimetype,
           size: file.size,
-          url
+          url: storageUrl, // Primary URL - works with Firebase Auth
+          directUrl: directUrl, // Fallback URL
+          downloadToken: downloadToken,
+          filePath: fileName
         });
       }
     }
@@ -196,26 +214,44 @@ router.put('/:id', upload.array('attachments', 5), async (req, res) => {
     assignment.meetLink = validatedMeetLink;
     assignment.updatedAt = Date.now();
 
+    // Handle new file attachments with permanent URLs
     if (req.files && req.files.length > 0) {
       const bucket = getBucket();
       for (const file of req.files) {
-        const fileName = `assignments/${assignment.classId}/${Date.now()}-${Math.round(Math.random() * 1E9)}-${file.originalname}`;
+        const timestamp = Date.now();
+        const randomStr = Math.round(Math.random() * 1E9);
+        const fileName = `assignments/${assignment.classId}/${timestamp}-${randomStr}-${file.originalname}`;
         const fileRef = bucket.file(fileName);
 
+        // Generate permanent download token
+        const downloadToken = crypto.randomBytes(16).toString('hex');
+
+        const metadata = {
+          contentType: file.mimetype,
+          metadata: {
+            firebaseStorageDownloadTokens: downloadToken,
+            uploadedAt: new Date().toISOString(),
+            originalName: file.originalname
+          }
+        };
+
         await fileRef.save(file.buffer, {
-          metadata: { contentType: file.mimetype }
+          metadata: metadata,
+          resumable: true
         });
 
-        const [url] = await fileRef.getSignedUrl({
-          action: 'read',
-          expires: '03-01-2500'
-        });
+        // Generate permanent URLs
+        const storageUrl = `https://firebasestorage.googleapis.com/v0/b/${process.env.FIREBASE_STORAGE_BUCKET}/o/${encodeURIComponent(fileName)}?alt=media`;
+        const directUrl = `https://storage.googleapis.com/${process.env.FIREBASE_STORAGE_BUCKET}/${encodeURIComponent(fileName)}`;
 
         assignment.attachments.push({
           name: file.originalname,
           type: file.mimetype,
           size: file.size,
-          url
+          url: storageUrl,
+          directUrl: directUrl,
+          downloadToken: downloadToken,
+          filePath: fileName
         });
       }
     }
@@ -243,31 +279,44 @@ router.delete('/:id', async (req, res) => {
     const submissions = await Submission.find({ assignmentId: req.params.id });
     const bucket = getBucket();
 
+    // Delete all submission files from Firebase
     for (const submission of submissions) {
       for (const file of submission.files) {
         try {
-          if (file.url) {
+          if (file.filePath) {
+            // Use filePath if available (more reliable)
+            await bucket.file(file.filePath).delete();
+          } else if (file.url) {
+            // Fallback to extracting from URL
             const fileName = decodeURIComponent(file.url.split('/o/')[1].split('?')[0]);
             await bucket.file(fileName).delete();
           }
         } catch (fileErr) {
-          console.error(`Failed to delete submission file:`, fileErr);
+          console.error(`Failed to delete submission file:`, fileErr.message);
+          // Continue with other files even if one fails
         }
       }
     }
 
+    // Delete all assignment attachments from Firebase
     for (const attachment of assignment.attachments || []) {
       try {
-        if (attachment.url) {
+        if (attachment.filePath) {
+          await bucket.file(attachment.filePath).delete();
+        } else if (attachment.url) {
           const fileName = decodeURIComponent(attachment.url.split('/o/')[1].split('?')[0]);
           await bucket.file(fileName).delete();
         }
       } catch (fileErr) {
-        console.error(`Failed to delete attachment:`, fileErr);
+        console.error(`Failed to delete attachment:`, fileErr.message);
+        // Continue with other attachments even if one fails
       }
     }
 
+    // Delete all submissions from database
     await Submission.deleteMany({ assignmentId: req.params.id });
+    
+    // Delete the assignment
     await Assignment.deleteOne({ _id: req.params.id });
 
     res.json({

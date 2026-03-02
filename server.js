@@ -52,7 +52,7 @@ try {
 
   admin.initializeApp({
     credential: admin.credential.cert(firebaseConfig),
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'uelms-378db.appspot.com',
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'uelms-378db.firebasestorage.app',
   });
 
   firebaseInitialized = true;
