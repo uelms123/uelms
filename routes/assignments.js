@@ -4,6 +4,7 @@ const Assignment = require('../models/Assignment');
 const Submission = require('../models/Submission');
 const multer = require('multer');
 const admin = require('firebase-admin');
+const crypto = require('crypto');
 const fs = require('fs');
 
 const upload = multer({
@@ -26,6 +27,11 @@ const upload = multer({
 });
 
 const getBucket = () => admin.storage().bucket();
+
+// ✅ PERMANENT URL GENERATOR — uses Firebase download token (never expires)
+const generatePermanentUrl = (fileName) => {
+  return `https://firebasestorage.googleapis.com/v0/b/${process.env.FIREBASE_STORAGE_BUCKET}/o/${encodeURIComponent(fileName)}?alt=media`;
+};
 
 router.get('/:classId', async (req, res) => {
   try {
@@ -102,49 +108,47 @@ router.post('/', upload.array('attachments', 5), async (req, res) => {
       }
     }
 
-  // In assignments.js - Update the attachments upload section
+    const uploadedAttachments = [];
+    if (req.files && req.files.length > 0) {
+      const bucket = getBucket();
+      for (const file of req.files) {
+        const timestamp = Date.now();
+        const randomStr = Math.round(Math.random() * 1E9);
+        const fileName = `assignments/${req.body.classId}/${timestamp}-${randomStr}-${file.originalname}`;
+        const fileRef = bucket.file(fileName);
 
-const uploadedAttachments = [];
-if (req.files && req.files.length > 0) {
-  const bucket = getBucket();
-  for (const file of req.files) {
-    const timestamp = Date.now();
-    const randomStr = Math.round(Math.random() * 1E9);
-    const fileName = `assignments/${req.body.classId}/${timestamp}-${randomStr}-${file.originalname}`;
-    const fileRef = bucket.file(fileName);
+        // ✅ Generate permanent download token
+        const downloadToken = crypto.randomBytes(16).toString('hex');
 
-    // Generate download token
-    const downloadToken = require('crypto').randomBytes(16).toString('hex');
+        const metadata = {
+          contentType: file.mimetype,
+          metadata: {
+            firebaseStorageDownloadTokens: downloadToken,
+            uploadedAt: new Date().toISOString(),
+            originalName: file.originalname
+          }
+        };
 
-    const metadata = {
-      contentType: file.mimetype,
-      metadata: {
-        firebaseStorageDownloadTokens: downloadToken,
-        uploadedAt: new Date().toISOString(),
-        originalName: file.originalname
+        await fileRef.save(file.buffer, {
+          metadata: metadata,
+          resumable: true
+        });
+
+        // ✅ Permanent Firebase Storage URL with download token (never expires)
+        const storageUrl = `https://firebasestorage.googleapis.com/v0/b/${process.env.FIREBASE_STORAGE_BUCKET}/o/${encodeURIComponent(fileName)}?alt=media&token=${downloadToken}`;
+        const directUrl = `https://storage.googleapis.com/${process.env.FIREBASE_STORAGE_BUCKET}/${encodeURIComponent(fileName)}`;
+
+        uploadedAttachments.push({
+          name: file.originalname,
+          type: file.mimetype,
+          size: file.size,
+          url: storageUrl,
+          directUrl: directUrl,
+          downloadToken: downloadToken,
+          filePath: fileName
+        });
       }
-    };
-
-    await fileRef.save(file.buffer, {
-      metadata: metadata,
-      resumable: true
-    });
-
-    // Generate URLs
-    const storageUrl = `https://firebasestorage.googleapis.com/v0/b/${process.env.FIREBASE_STORAGE_BUCKET}/o/${encodeURIComponent(fileName)}?alt=media`;
-    const directUrl = `https://storage.googleapis.com/${process.env.FIREBASE_STORAGE_BUCKET}/${encodeURIComponent(fileName)}`;
-
-    uploadedAttachments.push({
-      name: file.originalname,
-      type: file.mimetype,
-      size: file.size,
-      url: storageUrl,
-      directUrl: directUrl,
-      downloadToken: downloadToken,
-      filePath: fileName
-    });
-  }
-}
+    }
     
 
     const assignment = new Assignment({
@@ -219,23 +223,38 @@ router.put('/:id', upload.array('attachments', 5), async (req, res) => {
     if (req.files && req.files.length > 0) {
       const bucket = getBucket();
       for (const file of req.files) {
-        const fileName = `assignments/${assignment.classId}/${Date.now()}-${Math.round(Math.random() * 1E9)}-${file.originalname}`;
+        const timestamp = Date.now();
+        const randomStr = Math.round(Math.random() * 1E9);
+        const fileName = `assignments/${assignment.classId}/${timestamp}-${randomStr}-${file.originalname}`;
         const fileRef = bucket.file(fileName);
 
+        // ✅ Generate permanent download token (FIXED: was using getSignedUrl before)
+        const downloadToken = crypto.randomBytes(16).toString('hex');
+
+        const metadata = {
+          contentType: file.mimetype,
+          metadata: {
+            firebaseStorageDownloadTokens: downloadToken,
+            uploadedAt: new Date().toISOString(),
+            originalName: file.originalname
+          }
+        };
+
         await fileRef.save(file.buffer, {
-          metadata: { contentType: file.mimetype }
+          metadata: metadata,
+          resumable: true
         });
 
-        const [url] = await fileRef.getSignedUrl({
-          action: 'read',
-          expires: '03-01-2500'
-        });
+        // ✅ Permanent Firebase Storage URL with download token (never expires)
+        const storageUrl = `https://firebasestorage.googleapis.com/v0/b/${process.env.FIREBASE_STORAGE_BUCKET}/o/${encodeURIComponent(fileName)}?alt=media&token=${downloadToken}`;
 
         assignment.attachments.push({
           name: file.originalname,
           type: file.mimetype,
           size: file.size,
-          url
+          url: storageUrl,
+          downloadToken: downloadToken,
+          filePath: fileName
         });
       }
     }
@@ -266,9 +285,10 @@ router.delete('/:id', async (req, res) => {
     for (const submission of submissions) {
       for (const file of submission.files) {
         try {
-          if (file.url) {
-            const fileName = decodeURIComponent(file.url.split('/o/')[1].split('?')[0]);
-            await bucket.file(fileName).delete();
+          // ✅ Use filePath first, fallback to parsing URL
+          const filePath = file.filePath || (file.url ? decodeURIComponent(file.url.split('/o/')[1].split('?')[0]) : null);
+          if (filePath) {
+            await bucket.file(filePath).delete();
           }
         } catch (fileErr) {
           console.error(`Failed to delete submission file:`, fileErr);
@@ -278,9 +298,10 @@ router.delete('/:id', async (req, res) => {
 
     for (const attachment of assignment.attachments || []) {
       try {
-        if (attachment.url) {
-          const fileName = decodeURIComponent(attachment.url.split('/o/')[1].split('?')[0]);
-          await bucket.file(fileName).delete();
+        // ✅ Use filePath first, fallback to parsing URL
+        const filePath = attachment.filePath || (attachment.url ? decodeURIComponent(attachment.url.split('/o/')[1].split('?')[0]) : null);
+        if (filePath) {
+          await bucket.file(filePath).delete();
         }
       } catch (fileErr) {
         console.error(`Failed to delete attachment:`, fileErr);

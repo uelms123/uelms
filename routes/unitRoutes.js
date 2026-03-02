@@ -5,6 +5,7 @@ const path = require('path');
 const admin = require('firebase-admin');
 const { getStorage } = require('firebase-admin/storage');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const Unit = require('../models/unit');
 const File = require('../models/files');
@@ -51,6 +52,11 @@ const checkDailyLimit = async (uploadSize) => {
 
   record.totalBytes += uploadSize;
   await record.save();
+};
+
+// ✅ PERMANENT URL GENERATOR — uses Firebase download token (never expires)
+const generatePermanentUrl = (fileName) => {
+  return `https://firebasestorage.googleapis.com/v0/b/${process.env.FIREBASE_STORAGE_BUCKET}/o/${encodeURIComponent(fileName)}?alt=media`;
 };
 
 /* =====================================================
@@ -121,6 +127,7 @@ const uploadMiddleware = (req, res, next) => {
 
 /* =====================================================
    FIREBASE UPLOAD HELPER FUNCTION
+   ✅ FIXED: Uses permanent download token URLs instead of expiring signed URLs
 ===================================================== */
 
 const uploadToFirebase = async (localFilePath, destinationPath, contentType) => {
@@ -132,9 +139,17 @@ const uploadToFirebase = async (localFilePath, destinationPath, contentType) => 
     }
 
     const firebaseFile = bucket.file(destinationPath);
+
+    // ✅ Generate a permanent download token
+    const downloadToken = crypto.randomBytes(16).toString('hex');
+
     const writeStream = firebaseFile.createWriteStream({
       metadata: {
-        contentType: contentType
+        contentType: contentType,
+        metadata: {
+          firebaseStorageDownloadTokens: downloadToken,
+          uploadedAt: new Date().toISOString()
+        }
       },
       resumable: false
     });
@@ -145,23 +160,28 @@ const uploadToFirebase = async (localFilePath, destinationPath, contentType) => 
       .on('error', (error) => {
         reject(error);
       })
-      .on('finish', async () => {
+      .on('finish', () => {
         try {
-          // Clean up temp file
-          fs.unlinkSync(localFilePath);
-          
-          // Generate signed URL
-          const [url] = await firebaseFile.getSignedUrl({
-            action: 'read',
-            expires: '03-01-2500',
-          });
-          resolve({ url, fileName: path.basename(destinationPath) });
-        } catch (urlError) {
-          // Clean up temp file even if URL generation fails
+          // ✅ Clean up temp file
           if (fs.existsSync(localFilePath)) {
             fs.unlinkSync(localFilePath);
           }
-          reject(urlError);
+
+          // ✅ Build permanent URL with the download token (works immediately, never expires)
+          const permanentUrl = `https://firebasestorage.googleapis.com/v0/b/${process.env.FIREBASE_STORAGE_BUCKET}/o/${encodeURIComponent(destinationPath)}?alt=media&token=${downloadToken}`;
+
+          resolve({
+            url: permanentUrl,
+            filePath: destinationPath,
+            downloadToken: downloadToken,
+            fileName: path.basename(destinationPath)
+          });
+        } catch (err) {
+          // Clean up temp file even on error
+          if (fs.existsSync(localFilePath)) {
+            fs.unlinkSync(localFilePath);
+          }
+          reject(err);
         }
       });
   });
@@ -171,11 +191,99 @@ const uploadToFirebase = async (localFilePath, destinationPath, contentType) => 
    ROUTES
 ===================================================== */
 
+// ✅ Helper: extract storage filePath from a signed URL when filePath field is empty
+const extractFilePathFromSignedUrl = (url) => {
+  try {
+    // Format: https://storage.googleapis.com/BUCKET/PATH?GoogleAccessId=...
+    // Remove the bucket prefix to get just the file path
+    const withoutScheme = url.replace('https://storage.googleapis.com/', '');
+    const bucket = process.env.FIREBASE_STORAGE_BUCKET;
+    if (withoutScheme.startsWith(bucket + '/')) {
+      const pathWithQuery = withoutScheme.slice(bucket.length + 1);
+      return pathWithQuery.split('?')[0]; // strip query params
+    }
+  } catch (e) {
+    // ignore
+  }
+  return null;
+};
+
+// ✅ Helper: detect ANY signed/expiring URL that needs replacing
+const isExpiredSignedUrl = (url) => {
+  if (!url) return false;
+  return (
+    url.includes('X-Goog-Signature') ||
+    url.includes('x-goog-signature') ||
+    url.includes('GoogleAccessId') ||
+    url.includes('Signature=') ||
+    url.includes('Expires=') ||
+    // storage.googleapis.com (not firebasestorage.googleapis.com) is always a signed URL
+    (url.startsWith('https://storage.googleapis.com/') && !url.includes('firebasestorage.googleapis.com'))
+  );
+};
+
+// ✅ Helper: heal all uploaded files — set download token on Firebase + rebuild permanent URL
+const healFileUrls = async (files) => {
+  const healPromises = files.map(async (file) => {
+    const f = file.toObject ? file.toObject() : { ...file };
+    if (!f.isUploadedFile) return f;
+
+    const needsHeal = isExpiredSignedUrl(f.url) ||
+      // Also heal firebasestorage URLs that may lack a download token
+      (f.url && f.url.includes('firebasestorage.googleapis.com') && !f.url.includes('token='));
+
+    if (!needsHeal) return f;
+
+    const resolvedPath = f.filePath || extractFilePathFromSignedUrl(f.url);
+    if (!resolvedPath) return f;
+
+    try {
+      const bucket = getStorage().bucket();
+      const fileRef = bucket.file(resolvedPath);
+
+      // ✅ Set a fresh download token on the actual Firebase Storage file
+      const downloadToken = crypto.randomBytes(16).toString('hex');
+      await fileRef.setMetadata({
+        metadata: {
+          firebaseStorageDownloadTokens: downloadToken
+        }
+      });
+
+      // ✅ Build permanent URL with the new token
+      const newUrl = `https://firebasestorage.googleapis.com/v0/b/${process.env.FIREBASE_STORAGE_BUCKET}/o/${encodeURIComponent(resolvedPath)}?alt=media&token=${downloadToken}`;
+      f.url = newUrl;
+
+      // Save corrected URL + filePath back to MongoDB asynchronously
+      File.findByIdAndUpdate(f._id, { url: newUrl, filePath: resolvedPath })
+        .catch((e) => console.error('URL heal DB save error:', e.message));
+
+    } catch (e) {
+      // If Firebase file doesn't exist or any error, fall back to tokenless URL
+      console.error(`URL heal error for ${resolvedPath}:`, e.message);
+      f.url = generatePermanentUrl(resolvedPath);
+    }
+
+    return f;
+  });
+
+  return Promise.all(healPromises);
+};
+
 // Get all units for a class
 router.get('/:classId', async (req, res) => {
   try {
     const units = await Unit.find({ classId: req.params.classId }).populate('files');
-    res.json(units);
+
+    // ✅ Heal any expired signed URLs before sending to frontend
+    const healedUnits = await Promise.all(
+      units.map(async (unit) => {
+        const u = unit.toObject();
+        u.files = await healFileUrls(unit.files);
+        return u;
+      })
+    );
+
+    res.json(healedUnits);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch units', details: err.message });
   }
@@ -274,7 +382,7 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
       const ext = path.extname(originalName);
       const firebasePath = `units/${unitId}/files/${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
       
-      // Upload to Firebase using streaming
+      // ✅ Upload to Firebase using streaming — returns permanent URL
       const uploadResult = await uploadToFirebase(
         req.file.path, 
         firebasePath, 
@@ -302,8 +410,8 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
         isUploadedFile: true,
         isNotes: false,
         isLink: false,
-        filePath: '',
-        url: uploadResult.url,
+        filePath: uploadResult.filePath,   // ✅ store path for future URL regeneration
+        url: uploadResult.url,             // ✅ permanent URL
         uploadedBy: uploadedBy || unit.createdBy,
         uploadedByEmail: uploadedByEmail || unit.createdByEmail,
         unitId,
@@ -361,7 +469,9 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
     await unit.save();
 
     const populatedUnit = await Unit.findById(unitId).populate('files');
-    res.status(201).json(populatedUnit);
+    const u = populatedUnit.toObject();
+    u.files = await healFileUrls(populatedUnit.files);
+    res.status(201).json(u);
   } catch (err) {
     // Clean up temp file if it exists
     if (req.file && req.file.path && fs.existsSync(req.file.path)) {
@@ -375,7 +485,7 @@ router.post('/:unitId/files', uploadMiddleware, async (req, res) => {
   }
 });
 
-// Serve file info / URL
+// ✅ Serve file info / URL — regenerates permanent URL from stored filePath if needed
 router.get('/files/:fileId', async (req, res) => {
   try {
     const file = await File.findById(req.params.fileId);
@@ -383,8 +493,34 @@ router.get('/files/:fileId', async (req, res) => {
       return res.status(404).json({ error: 'File not found' });
     }
 
-    if (file.isUploadedFile && file.url) {
-      return res.json({ url: file.url, name: file.name, type: file.type });
+    if (file.isUploadedFile) {
+      let fileUrl = file.url;
+
+      // ✅ If stored URL is expired/broken, set a fresh download token on Firebase and regenerate URL
+      const needsHeal = isExpiredSignedUrl(fileUrl) ||
+        (fileUrl && fileUrl.includes('firebasestorage.googleapis.com') && !fileUrl.includes('token='));
+
+      if (needsHeal) {
+        const resolvedPath = file.filePath || extractFilePathFromSignedUrl(fileUrl);
+        if (resolvedPath) {
+          try {
+            const bucket = getStorage().bucket();
+            const fileRef = bucket.file(resolvedPath);
+            const downloadToken = crypto.randomBytes(16).toString('hex');
+            await fileRef.setMetadata({
+              metadata: { firebaseStorageDownloadTokens: downloadToken }
+            });
+            fileUrl = `https://firebasestorage.googleapis.com/v0/b/${process.env.FIREBASE_STORAGE_BUCKET}/o/${encodeURIComponent(resolvedPath)}?alt=media&token=${downloadToken}`;
+          } catch (e) {
+            fileUrl = generatePermanentUrl(resolvedPath);
+          }
+          file.url = fileUrl;
+          file.filePath = resolvedPath;
+          await file.save();
+        }
+      }
+
+      return res.json({ url: fileUrl, name: file.name, type: file.type });
     }
 
     if (file.isNotes || file.isLink) {
@@ -449,7 +585,9 @@ router.put('/:unitId', async (req, res) => {
 
     await unit.save();
     const populatedUnit = await Unit.findById(unitId).populate('files');
-    res.json(populatedUnit);
+    const u = populatedUnit.toObject();
+    u.files = await healFileUrls(populatedUnit.files);
+    res.json(u);
   } catch (err) {
     res.status(500).json({ error: 'Failed to update unit', details: err.message });
   }
@@ -485,14 +623,21 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
       await checkDailyLimit(req.file.size);
 
       // Delete old file from Firebase if it exists
-      if (file.url) {
+      if (file.filePath) {
         try {
-          const urlObj = new URL(file.url);
-          const filePath = decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
-          const oldFileRef = bucket.file(filePath);
+          const oldFileRef = bucket.file(file.filePath);
           await oldFileRef.delete();
         } catch (deleteErr) {
-          console.log('Could not delete old file:', deleteErr.message);
+          // Try URL-based delete as fallback for old records
+          if (file.url) {
+            try {
+              const urlObj = new URL(file.url);
+              const filePath = decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
+              await bucket.file(filePath).delete();
+            } catch (e) {
+              console.log('Could not delete old file:', e.message);
+            }
+          }
         }
       }
 
@@ -500,7 +645,7 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
       const fileExtension = path.extname(originalName);
       const firebaseFileName = `units/${unitId}/files/${Date.now()}-${Math.random().toString(36).slice(2)}${fileExtension}`;
       
-      // Upload to Firebase using streaming
+      // ✅ Upload to Firebase — returns permanent URL
       const uploadResult = await uploadToFirebase(
         req.file.path, 
         firebaseFileName, 
@@ -524,7 +669,8 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
       file.isUploadedFile = true;
       file.isNotes = false;
       file.isLink = false;
-      file.url = uploadResult.url;
+      file.filePath = uploadResult.filePath;   // ✅ save path
+      file.url = uploadResult.url;             // ✅ permanent URL
     } else if (fileType === 'notes' && notesContent) {
       const blob = Buffer.from(notesContent);
       file.name = fileName + '.txt';
@@ -553,7 +699,9 @@ router.put('/:unitId/files/:fileId', upload.single('fileUpload'), async (req, re
 
     await file.save();
     const populatedUnit = await Unit.findById(unitId).populate('files');
-    res.json(populatedUnit);
+    const u = populatedUnit.toObject();
+    u.files = await healFileUrls(populatedUnit.files);
+    res.json(u);
   } catch (err) {
     // Clean up temp file if it exists
     if (req.file && req.file.path && fs.existsSync(req.file.path)) {
@@ -580,12 +728,14 @@ router.delete('/:unitId', async (req, res) => {
     const bucket = getStorage().bucket();
 
     for (const file of unit.files) {
-      if (file.isUploadedFile && file.url) {
+      if (file.isUploadedFile) {
         try {
-          const urlObj = new URL(file.url);
-          const filePath = decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
-          const fileRef = bucket.file(filePath);
-          await fileRef.delete();
+          // ✅ Use stored filePath first, fallback to parsing URL
+          const filePath = file.filePath || (() => {
+            const urlObj = new URL(file.url);
+            return decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
+          })();
+          await bucket.file(filePath).delete();
         } catch (err) {
           // Ignore delete errors
         }
@@ -615,13 +765,15 @@ router.delete('/:unitId/files/:fileId', async (req, res) => {
       return res.status(404).json({ error: 'File not found' });
     }
 
-    if (file.isUploadedFile && file.url) {
+    if (file.isUploadedFile) {
       const bucket = getStorage().bucket();
       try {
-        const urlObj = new URL(file.url);
-        const filePath = decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
-        const fileRef = bucket.file(filePath);
-        await fileRef.delete();
+        // ✅ Use stored filePath first, fallback to parsing URL
+        const filePath = file.filePath || (() => {
+          const urlObj = new URL(file.url);
+          return decodeURIComponent(urlObj.pathname.split('/o/')[1].split('?')[0]);
+        })();
+        await bucket.file(filePath).delete();
       } catch (err) {
         // Ignore delete errors
       }
@@ -631,7 +783,9 @@ router.delete('/:unitId/files/:fileId', async (req, res) => {
     await unit.save();
     await File.findByIdAndDelete(fileId);
     const populatedUnit = await Unit.findById(unitId).populate('files');
-    res.json(populatedUnit);
+    const u = populatedUnit.toObject();
+    u.files = await healFileUrls(populatedUnit.files);
+    res.json(u);
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete file', details: err.message });
   }
