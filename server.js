@@ -15,7 +15,6 @@ const app = express();
 // At the very top of server.js, after requires
 const dns = require('dns');
 dns.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']); // Google + Cloudflare DNS
-
 // ============================================
 // FIREBASE INITIALIZATION (from second file)
 // ============================================
@@ -34,7 +33,7 @@ if (!firebaseConfig.projectId || !firebaseConfig.clientEmail || !firebaseConfig.
 
 admin.initializeApp({
   credential: admin.credential.cert(firebaseConfig),
-  storageBucket: 'uelms-378db.appspot.com', // ✅ FIXED
+  storageBucket: 'uelms-378db.firebasestorage.app',
 });
 
 const bucket = admin.storage().bucket();
@@ -81,41 +80,29 @@ setInterval(() => {
 // MIDDLEWARE CONFIGURATION (merged from both files)
 // ============================================
 
-// CORS configuration - FIXED
-const corsOptions = {
-  origin: function (origin, callback) {
-    const allowedOrigins = [
-      'http://localhost:3000',
-      'http://localhost:5000',
-      'http://127.0.0.1:3000',
-      'https://plagiarism-checker-olive.vercel.app',
-      'https://uelms.com'
-    ];
-    // Allow requests with no origin (like mobile apps, curl, etc)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+// CORS configuration (merged from both files)
+// CORS configuration (merged from both files)
+app.use(cors({
+  origin: [
+    'http://localhost:3000', 
+    'http://localhost:5000', 
+    'http://127.0.0.1:3000', 
+    'https://plagiarism-checker-olive.vercel.app', 
+    'https://uelms.com'
+  ],
   methods: ['GET', 'POST', 'DELETE', 'PUT', 'OPTIONS'],
   allowedHeaders: [
-    'Content-Type',
-    'Authorization',
-    'X-Requested-With',
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With', 
     'Accept',
-    'x-user-id',
-    'x-user-email'
+    'x-user-id',           // Add this
+    'x-user-email'         // Add this
   ],
-  exposedHeaders: ['Content-Disposition', 'Content-Length'],
+  exposedHeaders: ['Content-Disposition'], // Add this for file downloads
   credentials: true,
   optionsSuccessStatus: 200
-};
-
-app.use(cors(corsOptions));
-
-;
+}));
 
 // Body parsing middleware (merged from both files - using higher limits)
 app.use(express.json({ limit: '10gb' }));
@@ -178,15 +165,9 @@ const connectDB = async () => {
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
     
     // Create indexes (from first file)
-    try {
-      await conn.connection.db.collection('reports').createIndex({ createdAt: -1 });
-      await conn.connection.db.collection('reports').createIndex({ fileName: 1 });
-      await conn.connection.db.collection('reports').createIndex({ userId: 1 });
-      await conn.connection.db.collection('reports').createIndex({ userEmail: 1 });
-      console.log('📊 Database indexes created');
-    } catch (indexError) {
-      console.log('⚠️ Index creation skipped (may already exist)');
-    }
+    await conn.connection.db.collection('reports').createIndex({ createdAt: -1 });
+    await conn.connection.db.collection('reports').createIndex({ fileName: 1 });
+    console.log('📊 Database indexes created');
     
   } catch (error) {
     console.error('❌ MongoDB Connection Error:', error.message);
@@ -238,6 +219,9 @@ const StaffActivity = require('./models/StaffActivity');
 // ============================================
 // API ROUTES (from first file - plagiarism detector)
 // ============================================
+// ============================================
+// API ROUTES (from first file - plagiarism detector)
+// ============================================
 try {
   // Add middleware to extract user info from headers for plagiarism routes
   app.use('/api/plagiarism', (req, res, next) => {
@@ -248,20 +232,11 @@ try {
     if (userId) req.userId = userId;
     if (userEmail) req.userEmail = userEmail;
     
-    // Add to body for POST requests
-    if (req.method === 'POST') {
-      req.body.userId = req.body.userId || userId;
-      req.body.userEmail = req.body.userEmail || userEmail;
-    }
-    
     next();
   });
   
-  const plagiarismRoutes = require('./routes/plagiarismRoutes');
-  const reportRoutes = require('./routes/reportRoutes');
-  
-  app.use('/api/plagiarism', plagiarismRoutes);
-  app.use('/api/reports', reportRoutes);
+  app.use('/api/plagiarism', require('./routes/plagiarismRoutes'));
+  app.use('/api/reports', require('./routes/reportRoutes'));
   console.log('✅ Plagiarism routes loaded successfully (with user history support)');
 } catch (error) {
   console.error('❌ Error loading plagiarism routes:', error.message);
@@ -1489,6 +1464,9 @@ app.delete('/api/users', async (req, res) => {
 // ============================================
 // 404 HANDLER (from both files, merged)
 // ============================================
+// ============================================
+// 404 HANDLER (from both files, merged)
+// ============================================
 // Catch-all route for undefined routes
 app.use((req, res) => {
   res.status(404).json({ 
@@ -1650,4 +1628,3 @@ process.on('unhandledRejection', (err) => {
 });
 
 module.exports = app;
-
