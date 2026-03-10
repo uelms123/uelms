@@ -2,9 +2,30 @@ const mongoose = require('mongoose');
 
 const fileSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  type: { type: String, required: true },
+
+  type: { 
+    type: String, 
+    required: true,
+    enum: [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'text/csv',
+      'image/jpeg',
+      'image/png',
+      'image/gif',
+      'image/webp',
+      'application/octet-stream'
+    ],
+    default: 'application/octet-stream'
+  },
+
   size: { type: Number, required: true },
+
   url: { type: String, required: true }
+
 }, { timestamps: false });
 
 const mcqResultSchema = new mongoose.Schema({
