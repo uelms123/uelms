@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-vars */
 const express = require('express');
 const router = express.Router();
 const admin = require('firebase-admin');
@@ -213,7 +214,7 @@ router.get('/:uid', async (req, res) => {
 router.get('/with-classes', async (req, res) => {
   try {
     const allStaff = await Staff.find();
-    const staffWithClasses = await Promise.allStaff.map(async (staff) => {
+    const staffWithClasses = await Promise.all(allStaff.map(async (staff) => {
       const classesCount = await Class.countDocuments({
         $or: [
           { staffId: staff.staffId },
@@ -226,7 +227,7 @@ router.get('/with-classes', async (req, res) => {
         program: staff.department || '',
         classesCount: classesCount
       };
-    });
+    }));
     
     res.status(200).json({
       success: true,

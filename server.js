@@ -206,6 +206,7 @@ const staffActivityRoutes = require('./routes/staffActivityRoutes');
 const googleMeetAttendanceRoutes = require('./routes/googleMeetAttendance');
 const staffMeetingsRoutes = require('./routes/staffMeetings');
 const ebookRoutes = require('./routes/ebookRoutes');
+const recentActivitiesRoutes = require('./routes/recentActivitiesRoute');
 
 // Model imports (from second file)
 require('./models/files');
@@ -259,6 +260,7 @@ app.use('/api/programs', programRoutes);
 app.use('/api/staff-activity', staffActivityRoutes);
 app.use('/api/google-meet', require('./routes/googleMeetAttendance'));
 app.use('/api/staff-meetings', staffMeetingsRoutes);
+app.use('/api/recent-activities', recentActivitiesRoutes);
 app.use(ebookRoutes); 
 
 // ============================================

@@ -1,22 +1,49 @@
 const mongoose = require('mongoose');
 
+const passwordHistorySchema = new mongoose.Schema(
+  {
+    password: {
+      type: String,
+      default: ''
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now
+    },
+    createdBy: {
+      type: String,
+      default: 'admin'
+    },
+    note: {
+      type: String,
+      default: ''
+    }
+  },
+  { _id: false }
+);
+
 const staffSchema = new mongoose.Schema({
   staffId: {
     type: String,
-    required: [false, 'Staff ID is required'],
-    unique: true
-  },
-  uid: {  // NEW: Firebase UID field
-    type: String,
+    required: false,
     unique: true,
-    sparse: true,  // Allows multiple null values
+    sparse: true,
     trim: true
   },
+
+  uid: {
+    type: String,
+    unique: true,
+    sparse: true,
+    trim: true
+  },
+
   name: {
     type: String,
     required: [true, 'Staff name is required'],
     trim: true
   },
+
   email: {
     type: String,
     required: [true, 'Email is required'],
@@ -25,89 +52,140 @@ const staffSchema = new mongoose.Schema({
     trim: true,
     match: [/^\S+@\S+\.\S+$/, 'Please enter a valid email']
   },
+
   password: {
     type: String,
-    required: false
+    required: false,
+    default: ''
   },
+
   tempPassword: {
     type: String,
-    required: false
+    required: false,
+    default: ''
   },
-  passwordHistory: {  // Keep existing field
-    type: [{
-      password: String,
-      createdAt: {
-        type: Date,
-        default: Date.now
-      },
-      createdBy: String,
-      note: String
-    }],
+
+  passwordHistory: {
+    type: [passwordHistorySchema],
     default: []
   },
-  lastPasswordUpdated: {  // Keep existing field
-    type: Date
+
+  lastPasswordUpdated: {
+    type: Date,
+    default: null
   },
+
   position: {
     type: String,
     default: 'Teacher',
     trim: true
   },
+
   department: {
     type: String,
     required: [true, 'Department/Program is required'],
     trim: true
   },
+
   phone: {
     type: String,
     default: '',
     trim: true
   },
+
   createdByAdmin: {
     type: Boolean,
     default: false
   },
+
   createdTimestamp: {
     type: String,
     default: () => new Date().toISOString()
   },
+
   createdClasses: {
-    type: [{
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Class'
-    }],
+    type: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Class'
+      }
+    ],
     default: []
   },
+
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+
   createdAt: {
     type: Date,
     default: Date.now
   },
+
   updatedAt: {
     type: Date,
     default: Date.now
   }
 });
 
-// Update the updatedAt field on save
-staffSchema.pre('save', function(next) {
-  this.updatedAt = Date.now();
-  
-  if (!this.staffId) {
-    // Create staffId from email (remove @ and domain)
-    const emailPrefix = this.email.split('@')[0];
-    this.staffId = `staff_${emailPrefix}_${Date.now().toString().slice(-6)}`;
+// normalize values before validation
+staffSchema.pre('validate', function (next) {
+  if (this.email) {
+    this.email = String(this.email).trim().toLowerCase();
   }
-  
-  if (!this.createdTimestamp) {
-    this.createdTimestamp = new Date().toISOString();
+
+  if (this.name) {
+    this.name = String(this.name).trim();
   }
-  
+
+  if (this.department) {
+    this.department = String(this.department).trim();
+  }
+
+  if (this.position) {
+    this.position = String(this.position).trim();
+  }
+
+  if (this.phone) {
+    this.phone = String(this.phone).trim();
+  }
+
+  if (this.uid) {
+    this.uid = String(this.uid).trim();
+  }
+
   next();
 });
 
-// Create indexes for faster lookups
-staffSchema.index({ email: 1 });
-staffSchema.index({ uid: 1 });  // NEW: Index for UID
-staffSchema.index({ staffId: 1 });
+// update auto fields
+staffSchema.pre('save', function (next) {
+  this.updatedAt = new Date();
 
-module.exports = mongoose.model('Staff', staffSchema);
+  if (!this.staffId && this.email) {
+    const emailPrefix = this.email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '');
+    this.staffId = `staff_${emailPrefix}_${Date.now().toString().slice(-6)}`;
+  }
+
+  if (!this.createdTimestamp) {
+    this.createdTimestamp = new Date().toISOString();
+  }
+
+  if (
+    this.isModified('password') ||
+    this.isModified('tempPassword')
+  ) {
+    this.lastPasswordUpdated = new Date();
+  }
+
+  next();
+});
+
+// indexes
+staffSchema.index({ email: 1 });
+staffSchema.index({ uid: 1 });
+staffSchema.index({ staffId: 1 });
+staffSchema.index({ department: 1 });
+staffSchema.index({ createdAt: -1 });
+
+module.exports = mongoose.models.Staff || mongoose.model('Staff', staffSchema);

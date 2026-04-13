@@ -10,6 +10,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "app": "^0.1.0",
     "archiver": "^7.0.1",
     "axios": "^1.13.2",
     "bcryptjs": "^3.0.3",
@@ -28,7 +29,8 @@
     "pdf-lib": "^1.17.1",
     "pdf-parse": "^1.1.1",
     "pdfkit": "^0.17.2",
-    "string-similarity": "^4.0.4"
+    "string-similarity": "^4.0.4",
+    "xlsx": "^0.18.5"
   },
   "description": "",
   "devDependencies": {
