@@ -29,6 +29,96 @@ const getSafeActorName = (...values) => {
   return 'Unknown User';
 };
 
+const getSafeFileUrl = (file) => {
+  if (!file) return '';
+
+  return (
+    cleanDisplayValue(file.url) ||
+    cleanDisplayValue(file.fileUrl) ||
+    cleanDisplayValue(file.path) ||
+    cleanDisplayValue(file.location) ||
+    cleanDisplayValue(file.secure_url) ||
+    cleanDisplayValue(file.downloadUrl) ||
+    ''
+  );
+};
+
+const getSafeFileName = (file, fallback = 'file') => {
+  if (!file) return fallback;
+
+  return (
+    cleanDisplayValue(file.name) ||
+    cleanDisplayValue(file.fileName) ||
+    cleanDisplayValue(file.originalName) ||
+    cleanDisplayValue(file.filename) ||
+    fallback
+  );
+};
+
+const getFileTimestamp = (file, fallbackDate = null) => {
+  if (!file) return fallbackDate;
+
+  const possibleDates = [
+    file.createdAt,
+    file.uploadedAt,
+    file.updatedAt,
+    file.date,
+    fallbackDate
+  ];
+
+  for (const value of possibleDates) {
+    if (!value) continue;
+    const dt = new Date(value);
+    if (!isNaN(dt.getTime())) return dt;
+  }
+
+  return fallbackDate;
+};
+
+const extractUnitFiles = (unit) => {
+  const collected = [];
+
+  const possibleSources = [
+    unit?.files,
+    unit?.attachments,
+    unit?.resources,
+    unit?.documents,
+    unit?.materials
+  ];
+
+  possibleSources.forEach((source) => {
+    if (!source) return;
+
+    if (Array.isArray(source)) {
+      source.forEach((item) => {
+        if (!item) return;
+
+        if (typeof item === 'string') {
+          collected.push({
+            name: 'file',
+            url: item,
+            createdAt: unit?.updatedAt || unit?.createdAt
+          });
+        } else if (typeof item === 'object') {
+          const url = getSafeFileUrl(item);
+          const name = getSafeFileName(item, 'file');
+
+          if (url) {
+            collected.push({
+              ...item,
+              name,
+              url,
+              createdAt: getFileTimestamp(item, unit?.updatedAt || unit?.createdAt)
+            });
+          }
+        }
+      });
+    }
+  });
+
+  return collected;
+};
+
 router.get('/', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || 10, 100);
@@ -210,7 +300,6 @@ router.get('/', async (req, res) => {
           });
         });
 
-        // STUDENT ATTENDED MEETING
         meetings.forEach((meeting) => {
           (meeting.attendees || []).forEach((attendee) => {
             if (!attendee.joinedAt) return;
@@ -240,20 +329,21 @@ router.get('/', async (req, res) => {
     }
 
     // =========================
-    // STAFF UNITS / ASSESSMENTS
+    // STAFF UNITS / ASSESSMENTS + FILES INSIDE UNIT
     // =========================
     if (Unit) {
       try {
         const units = await Unit.find({})
           .populate('files')
-          .sort({ createdAt: -1 })
+          .sort({ updatedAt: -1, createdAt: -1 })
           .limit(50)
           .lean();
 
         units.forEach((unit) => {
-          const firstFile =
-            Array.isArray(unit.files) && unit.files.length > 0 ? unit.files[0] : null;
+          const extractedFiles = extractUnitFiles(unit);
+          const firstFile = extractedFiles.length > 0 ? extractedFiles[0] : null;
 
+          // Original unit creation activity
           push({
             type: 'staff_assessment',
             label: unit.isAssessmentUnit ? 'Assessment' : 'Unit',
@@ -277,6 +367,35 @@ router.get('/', async (req, res) => {
             link: firstFile?.url || '',
             linkLabel: firstFile?.name ? `Open ${firstFile.name}` : '',
             rawType: 'unit'
+          });
+
+          // NEW: separate file activities for files uploaded inside unit
+          extractedFiles.forEach((file, index) => {
+            if (!file.url) return;
+
+            push({
+              type: 'staff_unit_file',
+              label: unit.isAssessmentUnit ? 'Assessment File' : 'Unit File',
+              actorRole: 'Staff',
+              actorName: getSafeActorName(
+                unit.createdByName,
+                unit.createdByEmail,
+                unit.createdBy,
+                'Staff Member'
+              ),
+              actorEmail: cleanDisplayValue(unit.createdByEmail),
+              actionText: `uploaded file "${file.name}" in "${unit.title || 'Untitled'}"`,
+              meta: unit.isAssessmentUnit ? 'Assessment resource' : 'Unit resource',
+              icon: '📎',
+              color: '#2563eb',
+              timestamp:
+                getFileTimestamp(file, unit.updatedAt || unit.createdAt) ||
+                unit.updatedAt ||
+                unit.createdAt,
+              link: file.url,
+              linkLabel: `Open ${file.name || `file ${index + 1}`}`,
+              rawType: 'unit_file'
+            });
           });
         });
       } catch (e) {
