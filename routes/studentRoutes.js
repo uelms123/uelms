@@ -5,6 +5,70 @@ const Class = require('../models/Class');
 const bcrypt = require('bcryptjs');
 const admin = require('firebase-admin');
 
+const safeValue = (value, fallback = '') => {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === 'string' && value.trim() === '') return fallback;
+  return String(value).trim();
+};
+
+const buildStudentName = (student) => {
+  const name = safeValue(student?.name);
+  if (name) return name;
+
+  const email = safeValue(student?.email);
+  if (email && email.includes('@')) {
+    return email.split('@')[0];
+  }
+
+  return 'Student';
+};
+
+const buildProgram = (student) => {
+  return safeValue(student?.program) || 'No Program Assigned';
+};
+
+const buildStudentId = (student) => {
+  return safeValue(student?.studentId) || `STD-${String(student?._id || '').slice(-6).toUpperCase() || Date.now()}`;
+};
+
+const buildPassword = (student) => {
+  return safeValue(student?.password) || safeValue(student?.tempPassword) || 'Old account - reset required';
+};
+
+async function normalizeStudentRecord(student) {
+  let changed = false;
+
+  const fixedName = buildStudentName(student);
+  if (student.name !== fixedName) {
+    student.name = fixedName;
+    changed = true;
+  }
+
+  const fixedProgram = buildProgram(student);
+  if (student.program !== fixedProgram) {
+    student.program = fixedProgram;
+    changed = true;
+  }
+
+  const fixedStudentId = buildStudentId(student);
+  if (!safeValue(student.studentId) || student.studentId !== fixedStudentId) {
+    student.studentId = fixedStudentId;
+    changed = true;
+  }
+
+  if (!safeValue(student.password) && !safeValue(student.tempPassword)) {
+    student.tempPassword = 'Old account - reset required';
+    changed = true;
+  }
+
+  if (changed) {
+    student.updatedAt = new Date();
+    await student.save();
+  }
+
+  return student;
+}
+
 async function createFirebaseUser(email, password) {
   try {
     const userRecord = await admin.auth().createUser({
@@ -55,11 +119,18 @@ async function updateFirebaseUserPassword(email, newPassword) {
 router.get('/', async (req, res) => {
   try {
     const students = await Student.find({}, '-tempPassword -__v');
-    res.status(200).json(students);
+
+    const normalizedStudents = [];
+    for (const student of students) {
+      const normalized = await normalizeStudentRecord(student);
+      normalizedStudents.push(normalized);
+    }
+
+    res.status(200).json(normalizedStudents);
   } catch (err) {
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Failed to fetch students: ' + err.message 
+      error: 'Failed to fetch students: ' + err.message
     });
   }
 });
@@ -67,11 +138,21 @@ router.get('/', async (req, res) => {
 router.get('/with-passwords', async (req, res) => {
   try {
     const students = await Student.find({}, '-_id -__v');
-    res.status(200).json(students);
+
+    const normalizedStudents = students.map(student => ({
+      ...student.toObject(),
+      name: buildStudentName(student),
+      program: buildProgram(student),
+      studentId: safeValue(student.studentId) || 'Not assigned',
+      password: safeValue(student.password),
+      tempPassword: safeValue(student.tempPassword) || (!safeValue(student.password) ? 'Old account - reset required' : '')
+    }));
+
+    res.status(200).json(normalizedStudents);
   } catch (err) {
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Failed to fetch students with passwords: ' + err.message 
+      error: 'Failed to fetch students with passwords: ' + err.message
     });
   }
 });
@@ -79,28 +160,30 @@ router.get('/with-passwords', async (req, res) => {
 router.get('/:email/enrollment-details', async (req, res) => {
   try {
     const email = req.params.email.toLowerCase();
-    
+
     const student = await Student.findOne({ email: email });
-    
+
     if (!student) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Student not found' 
+        error: 'Student not found'
       });
     }
-    
+
+    await normalizeStudentRecord(student);
+
     const classes = await Class.find({
       'students.email': email
     }).select('name subject teacher staffId staff students createdAt');
-    
+
     const enrolledClasses = [];
-    
+
     classes.forEach(cls => {
       const studentInClass = cls.students.find(s => s.email === email);
-      
+
       let staffEmail = '';
       let staffName = '';
-      
+
       if (cls.staff && cls.staff.length > 0) {
         const primaryStaff = cls.staff[0];
         staffEmail = primaryStaff.email || '';
@@ -108,28 +191,28 @@ router.get('/:email/enrollment-details', async (req, res) => {
       } else {
         staffName = cls.teacher || '';
       }
-      
+
       enrolledClasses.push({
         className: cls.name || 'N/A',
         subject: cls.subject || 'N/A',
-        instructor: staffName,
-        instructorEmail: staffEmail,
+        instructor: staffName || 'N/A',
+        instructorEmail: staffEmail || 'N/A',
         staffId: cls.staffId || 'N/A',
         enrollmentDate: studentInClass ? studentInClass.joinedAt : cls.createdAt,
         classCreatedAt: cls.createdAt,
         studentData: studentInClass || {}
       });
     });
-    
+
     res.status(200).json({
       success: true,
       student: {
-        studentId: student.studentId,
-        name: student.name,
-        email: student.email,
-        program: student.program,
-        tempPassword: student.tempPassword,
-        password: student.password,
+        studentId: buildStudentId(student),
+        name: buildStudentName(student),
+        email: student.email || 'N/A',
+        program: buildProgram(student),
+        tempPassword: safeValue(student.tempPassword) || (!safeValue(student.password) ? 'Old account - reset required' : ''),
+        password: safeValue(student.password),
         createdAt: student.createdAt,
         createdByAdmin: student.createdByAdmin,
         enrollmentDate: student.createdAt
@@ -137,11 +220,10 @@ router.get('/:email/enrollment-details', async (req, res) => {
       enrollments: enrolledClasses,
       totalClasses: enrolledClasses.length
     });
-    
   } catch (err) {
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Failed to fetch student enrollment details: ' + err.message 
+      error: 'Failed to fetch student enrollment details: ' + err.message
     });
   }
 });
@@ -149,39 +231,32 @@ router.get('/:email/enrollment-details', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { name, program, email, tempPassword, password } = req.body;
-    
+
     if (!name) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Name is required' 
+        error: 'Name is required'
       });
     }
-    
-    if (!program) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Program is required' 
-      });
-    }
-    
+
     if (!email) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Email is required' 
+        error: 'Email is required'
       });
     }
 
     const existingStudent = await Student.findOne({ email: email.toLowerCase() });
     if (existingStudent) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Student email already exists in database' 
+        error: 'Student email already exists in database'
       });
     }
 
-    const newStudent = new Student({ 
-      name: name,
-      program: program,
+    const newStudent = new Student({
+      name: safeValue(name),
+      program: safeValue(program) || 'No Program Assigned',
       email: email.toLowerCase(),
       tempPassword: tempPassword || password || null,
       password: password || tempPassword || null,
@@ -189,23 +264,29 @@ router.post('/', async (req, res) => {
       accountCreated: new Date(),
       createdAt: new Date()
     });
+
     await newStudent.save();
-    
-    res.status(201).json({ 
+
+    if (!safeValue(newStudent.studentId)) {
+      newStudent.studentId = buildStudentId(newStudent);
+      await newStudent.save();
+    }
+
+    res.status(201).json({
       success: true,
       message: 'Student added successfully',
       data: newStudent
     });
   } catch (err) {
     if (err.code === 11000) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Student email already exists in database' 
+        error: 'Student email already exists in database'
       });
     }
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Failed to add student: ' + err.message 
+      error: 'Failed to add student: ' + err.message
     });
   }
 });
@@ -213,11 +294,11 @@ router.post('/', async (req, res) => {
 router.post('/bulk-upload-simple', async (req, res) => {
   try {
     const { users } = req.body;
-    
+
     if (!users || !Array.isArray(users)) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Invalid data format. Expected array of users.' 
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid data format. Expected array of users.'
       });
     }
 
@@ -233,54 +314,48 @@ router.post('/bulk-upload-simple', async (req, res) => {
 
     for (let i = 0; i < users.length; i++) {
       const user = users[i];
-      
+
       try {
         const { name, program, email, password } = user;
-        
+
         if (!name || !name.trim()) {
           results.failed++;
           results.errors.push(`Row ${i + 1}: Missing name`);
           continue;
         }
-        
-        if (!program || !program.trim()) {
-          results.failed++;
-          results.errors.push(`Row ${i + 1}: Missing program for ${email || 'unknown'}`);
-          continue;
-        }
-        
+
         if (!email || !email.trim()) {
           results.failed++;
           results.errors.push(`Row ${i + 1}: Missing email for ${name || 'unknown'}`);
           continue;
         }
-        
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(email.trim())) {
-          results.failed++;
-          results.errors.push(`Row ${i + 1}: Invalid email format: ${email}`);
-          continue;
-        }
-        
+
         if (!password || password.length < 6) {
           results.failed++;
           results.errors.push(`Row ${i + 1}: Password must be at least 6 characters for: ${email}`);
           continue;
         }
 
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email.trim())) {
+          results.failed++;
+          results.errors.push(`Row ${i + 1}: Invalid email format: ${email}`);
+          continue;
+        }
+
         const cleanEmail = email.toLowerCase().trim();
         const cleanName = name.trim();
-        const cleanProgram = program.trim();
-        
+        const cleanProgram = (program || '').trim() || 'No Program Assigned';
+
         const firebaseResult = await createFirebaseUser(cleanEmail, password);
         if (firebaseResult.success) {
           results.firebaseSuccess++;
         } else {
           results.firebaseFailed++;
         }
-        
+
         const existingStudent = await Student.findOne({ email: cleanEmail });
-        
+
         if (existingStudent) {
           existingStudent.name = cleanName;
           existingStudent.program = cleanProgram;
@@ -289,7 +364,11 @@ router.post('/bulk-upload-simple', async (req, res) => {
           existingStudent.updatedAt = new Date();
           existingStudent.updatedBy = 'bulk-upload';
           existingStudent.isActive = true;
-          
+
+          if (!safeValue(existingStudent.studentId)) {
+            existingStudent.studentId = buildStudentId(existingStudent);
+          }
+
           await existingStudent.save();
           results.updated++;
         } else {
@@ -304,11 +383,16 @@ router.post('/bulk-upload-simple', async (req, res) => {
             createdAt: new Date(),
             isActive: true
           });
-          
+
           await newStudent.save();
+
+          if (!safeValue(newStudent.studentId)) {
+            newStudent.studentId = buildStudentId(newStudent);
+            await newStudent.save();
+          }
+
           results.created++;
         }
-
       } catch (error) {
         results.failed++;
         results.errors.push(`Row ${i + 1} (${user.email || 'unknown'}): ${error.message}`);
@@ -331,12 +415,11 @@ router.post('/bulk-upload-simple', async (req, res) => {
         errors: results.errors.slice(0, 30)
       }
     });
-
   } catch (error) {
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: 'Server error during bulk upload',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -344,37 +427,36 @@ router.post('/bulk-upload-simple', async (req, res) => {
 router.delete('/:email', async (req, res) => {
   try {
     const email = req.params.email;
-    
+
     if (!email) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Email parameter is required' 
+        error: 'Email parameter is required'
       });
     }
 
     const cleanEmail = email.toLowerCase();
-    
+
     const firebaseResult = await deleteFirebaseUser(cleanEmail);
-    
     const result = await Student.deleteOne({ email: cleanEmail });
-    
+
     if (result.deletedCount === 0) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Student not found with the provided email' 
+        error: 'Student not found with the provided email'
       });
     }
 
-    res.status(200).json({ 
+    res.status(200).json({
       success: true,
       message: 'Student deleted successfully from both Firebase and MongoDB',
       deletedCount: result.deletedCount,
       firebaseDeleted: firebaseResult.success
     });
   } catch (err) {
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Failed to delete student: ' + err.message 
+      error: 'Failed to delete student: ' + err.message
     });
   }
 });
@@ -382,19 +464,19 @@ router.delete('/:email', async (req, res) => {
 router.post('/bulk-delete', async (req, res) => {
   try {
     const { emails } = req.body;
-    
+
     if (!emails || !Array.isArray(emails) || emails.length === 0) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Email array is required' 
+        error: 'Email array is required'
       });
     }
 
     const lowerEmails = emails.map(email => email.toLowerCase());
-    
+
     let firebaseDeletedCount = 0;
     let firebaseFailedCount = 0;
-    
+
     for (const email of lowerEmails) {
       const firebaseResult = await deleteFirebaseUser(email);
       if (firebaseResult.success) {
@@ -403,10 +485,10 @@ router.post('/bulk-delete', async (req, res) => {
         firebaseFailedCount++;
       }
     }
-    
+
     const mongoResult = await Student.deleteMany({ email: { $in: lowerEmails } });
-    
-    res.status(200).json({ 
+
+    res.status(200).json({
       success: true,
       message: 'Bulk delete completed successfully',
       deletedCount: mongoResult.deletedCount,
@@ -415,9 +497,9 @@ router.post('/bulk-delete', async (req, res) => {
       firebaseFailed: firebaseFailedCount
     });
   } catch (err) {
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Failed to delete students: ' + err.message 
+      error: 'Failed to delete students: ' + err.message
     });
   }
 });
@@ -426,28 +508,31 @@ router.put('/:email', async (req, res) => {
   try {
     const email = req.params.email;
     const { name, program, newEmail, tempPassword, password } = req.body;
-    
+
     if (!email) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Email parameter is required' 
+        error: 'Email parameter is required'
       });
     }
 
     const updateData = { updatedAt: new Date() };
+
     if (name) updateData.name = name;
-    if (program) updateData.program = program;
+    if (program !== undefined) updateData.program = safeValue(program) || 'No Program Assigned';
     if (tempPassword !== undefined) updateData.tempPassword = tempPassword;
+
     if (password !== undefined) {
       updateData.password = password;
       await updateFirebaseUserPassword(email.toLowerCase(), password);
     }
+
     if (newEmail) {
       const existingStudent = await Student.findOne({ email: newEmail.toLowerCase() });
       if (existingStudent && existingStudent.email !== email.toLowerCase()) {
-        return res.status(400).json({ 
+        return res.status(400).json({
           success: false,
-          error: 'New email already exists in database' 
+          error: 'New email already exists in database'
         });
       }
       updateData.email = newEmail.toLowerCase();
@@ -458,29 +543,89 @@ router.put('/:email', async (req, res) => {
       updateData,
       { new: true }
     );
-    
+
     if (!result) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         success: false,
-        error: 'Student not found with the provided email' 
+        error: 'Student not found with the provided email'
       });
     }
 
-    res.status(200).json({ 
+    if (!safeValue(result.studentId)) {
+      result.studentId = buildStudentId(result);
+      await result.save();
+    }
+
+    res.status(200).json({
       success: true,
       message: 'Student updated successfully',
       data: result
     });
   } catch (err) {
     if (err.code === 11000) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        error: 'Email already exists in database' 
+        error: 'Email already exists in database'
       });
     }
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: 'Failed to update student: ' + err.message 
+      error: 'Failed to update student: ' + err.message
+    });
+  }
+});
+
+/*
+  NEW FIX ROUTE FOR OLD DATA
+  Run this once:
+  PUT /api/students/fix-old-students-data
+*/
+router.put('/fix-old-students-data', async (req, res) => {
+  try {
+    const students = await Student.find({});
+    let updated = 0;
+
+    for (const student of students) {
+      let changed = false;
+
+      const fixedName = buildStudentName(student);
+      if (student.name !== fixedName) {
+        student.name = fixedName;
+        changed = true;
+      }
+
+      const fixedProgram = buildProgram(student);
+      if (student.program !== fixedProgram) {
+        student.program = fixedProgram;
+        changed = true;
+      }
+
+      const fixedStudentId = buildStudentId(student);
+      if (!safeValue(student.studentId) || student.studentId !== fixedStudentId) {
+        student.studentId = fixedStudentId;
+        changed = true;
+      }
+
+      if (!safeValue(student.password) && !safeValue(student.tempPassword)) {
+        student.tempPassword = 'Old account - reset required';
+        changed = true;
+      }
+
+      if (changed) {
+        student.updatedAt = new Date();
+        await student.save();
+        updated++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `${updated} old student records fixed successfully`
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
     });
   }
 });

@@ -15,7 +15,11 @@ router.get('/', async (req, res) => {
     const staff = await Staff.find().lean();
     const formattedStaff = staff.map(s => ({
       ...s,
-      program: s.department || '' // frontend compatibility
+      name: buildStaffName(s),
+      staffId: buildStaffId(s),
+      department: buildDepartment(s),
+      program: buildDepartment(s),
+      displayPassword: buildPassword(s)
     }));
     res.status(200).json(formattedStaff);
   } catch (err) {
@@ -25,6 +29,41 @@ router.get('/', async (req, res) => {
     });
   }
 });
+
+
+const safeValue = (value, fallback = '') => {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === 'string' && value.trim() === '') return fallback;
+  return String(value).trim();
+};
+
+const buildStaffName = (staff) => {
+  const name = safeValue(staff?.name);
+  if (name) return name;
+
+  const email = safeValue(staff?.email);
+  if (email && email.includes('@')) {
+    return email.split('@')[0];
+  }
+
+  return 'Staff';
+};
+
+const buildDepartment = (staff) => {
+  return safeValue(staff?.department) || safeValue(staff?.program) || 'No Department Assigned';
+};
+
+const buildStaffId = (staff) => {
+  return safeValue(staff?.staffId) || `STAFF-${String(staff?._id || '').slice(-6).toUpperCase() || Date.now()}`;
+};
+
+const buildPassword = (staff) => {
+  if (staff?.passwordHistory && staff.passwordHistory.length > 0) {
+    const latest = staff.passwordHistory[staff.passwordHistory.length - 1]?.password;
+    if (safeValue(latest)) return latest;
+  }
+  return safeValue(staff?.tempPassword) || safeValue(staff?.password) || 'Old account - reset required';
+};
 router.post('/update-password', async (req, res) => {
   const { email, newPassword } = req.body;
 
@@ -47,21 +86,18 @@ router.post('/update-password', async (req, res) => {
 router.get('/with-passwords', async (req, res) => {
   try {
     const staff = await Staff.find().select('+tempPassword +passwordHistory');
-    const staffWithPasswords = staff.map(user => {
-      const latestPassword = user.passwordHistory && user.passwordHistory.length > 0 
-        ? user.passwordHistory[user.passwordHistory.length - 1].password
-        : user.tempPassword || 'Not available';
-      
-      return {
-        ...user.toObject(),
-        displayPassword: latestPassword,
-        hasPasswordHistory: user.passwordHistory && user.passwordHistory.length > 0,
-        passwordHistoryCount: user.passwordHistory ? user.passwordHistory.length : 0,
-        lastPasswordUpdate: user.lastPasswordUpdated || user.createdAt,
-        program: user.department || ''
-      };
-    });
-    
+    const staffWithPasswords = staff.map(user => ({
+      ...user.toObject(),
+      name: buildStaffName(user),
+      staffId: buildStaffId(user),
+      department: buildDepartment(user),
+      program: buildDepartment(user),
+      displayPassword: buildPassword(user),
+      hasPasswordHistory: user.passwordHistory && user.passwordHistory.length > 0,
+      passwordHistoryCount: user.passwordHistory ? user.passwordHistory.length : 0,
+      lastPasswordUpdate: user.lastPasswordUpdated || user.createdAt
+    }));
+
     res.status(200).json({
       success: true,
       count: staffWithPasswords.length,
@@ -72,6 +108,54 @@ router.get('/with-passwords', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to fetch staff with passwords: ' + err.message
+    });
+  }
+});
+router.put('/fix-old-staff-data', async (req, res) => {
+  try {
+    const staffList = await Staff.find({});
+    let updated = 0;
+
+    for (const staff of staffList) {
+      let changed = false;
+
+      const fixedName = buildStaffName(staff);
+      if (staff.name !== fixedName) {
+        staff.name = fixedName;
+        changed = true;
+      }
+
+      const fixedDepartment = buildDepartment(staff);
+      if (staff.department !== fixedDepartment) {
+        staff.department = fixedDepartment;
+        changed = true;
+      }
+
+      const fixedStaffId = buildStaffId(staff);
+      if (!safeValue(staff.staffId) || staff.staffId !== fixedStaffId) {
+        staff.staffId = fixedStaffId;
+        changed = true;
+      }
+
+      if ((!staff.passwordHistory || staff.passwordHistory.length === 0) && !safeValue(staff.tempPassword)) {
+        staff.tempPassword = 'Old account - reset required';
+        changed = true;
+      }
+
+      if (changed) {
+        await staff.save();
+        updated++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `${updated} old staff records fixed successfully`
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
     });
   }
 });
