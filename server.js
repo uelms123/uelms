@@ -266,7 +266,46 @@ app.use(ebookRoutes);
 // ============================================
 // API STATUS ENDPOINTS (from first file)
 // ============================================
+app.get('/api/auth/resolve-user', async (req, res) => {
+  try {
+    const email = req.query.email?.toLowerCase()?.trim();
 
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email is required'
+      });
+    }
+
+    const staff = await Staff.findOne({ email }).lean();
+    if (staff) {
+      return res.status(200).json({
+        success: true,
+        role: 'staff',
+        user: staff
+      });
+    }
+
+    const student = await Student.findOne({ email }).lean();
+    if (student) {
+      return res.status(200).json({
+        success: true,
+        role: 'student',
+        user: student
+      });
+    }
+
+    return res.status(404).json({
+      success: false,
+      error: 'User not found in database'
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
 // API Key status endpoint
 app.get('/api/status', (req, res) => {
   const apiStatus = {
