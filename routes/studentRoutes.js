@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const Student = require('../models/Students');
 const Class = require('../models/Class');
-const bcrypt = require('bcryptjs');
 const admin = require('firebase-admin');
 
 const safeValue = (value, fallback = '') => {
@@ -69,20 +68,25 @@ async function normalizeStudentRecord(student) {
   return student;
 }
 
-async function createFirebaseUser(email, password) {
+async function createFirebaseUser(email, password, displayName = '') {
   try {
     const userRecord = await admin.auth().createUser({
       email: email,
       password: password,
-      emailVerified: false
+      displayName: displayName || undefined,
+      emailVerified: false,
+      disabled: false
     });
-    return { success: true, uid: userRecord.uid };
+    return { success: true, uid: userRecord.uid, created: true };
   } catch (error) {
     if (error.code === 'auth/email-already-exists') {
       try {
         const existingUser = await admin.auth().getUserByEmail(email);
-        await admin.auth().updateUser(existingUser.uid, { password: password });
-        return { success: true, alreadyExists: true, uid: existingUser.uid };
+        await admin.auth().updateUser(existingUser.uid, {
+          password: password,
+          displayName: displayName || existingUser.displayName
+        });
+        return { success: true, uid: existingUser.uid, alreadyExists: true };
       } catch (updateError) {
         return { success: false, error: updateError.message };
       }
@@ -228,9 +232,16 @@ router.get('/:email/enrollment-details', async (req, res) => {
   }
 });
 
+/*
+  FIXED:
+  This route now creates the Firebase user first, then saves MongoDB.
+*/
 router.post('/', async (req, res) => {
+  let firebaseUid = null;
+
   try {
     const { name, program, email, tempPassword, password } = req.body;
+    const finalPassword = tempPassword || password;
 
     if (!name) {
       return res.status(400).json({
@@ -246,7 +257,16 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const existingStudent = await Student.findOne({ email: email.toLowerCase() });
+    if (!finalPassword || finalPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Password must be at least 6 characters'
+      });
+    }
+
+    const lowerEmail = email.toLowerCase().trim();
+
+    const existingStudent = await Student.findOne({ email: lowerEmail });
     if (existingStudent) {
       return res.status(400).json({
         success: false,
@@ -254,23 +274,30 @@ router.post('/', async (req, res) => {
       });
     }
 
+    const firebaseResult = await createFirebaseUser(lowerEmail, finalPassword, safeValue(name));
+    if (!firebaseResult.success) {
+      return res.status(400).json({
+        success: false,
+        error: 'Firebase error: ' + firebaseResult.error
+      });
+    }
+
+    firebaseUid = firebaseResult.uid;
+
     const newStudent = new Student({
+      studentId: firebaseUid,
       name: safeValue(name),
       program: safeValue(program) || 'No Program Assigned',
-      email: email.toLowerCase(),
-      tempPassword: tempPassword || password || null,
-      password: password || tempPassword || null,
+      email: lowerEmail,
+      tempPassword: finalPassword,
+      password: finalPassword,
       createdByAdmin: true,
       accountCreated: new Date(),
-      createdAt: new Date()
+      createdAt: new Date(),
+      isActive: true
     });
 
     await newStudent.save();
-
-    if (!safeValue(newStudent.studentId)) {
-      newStudent.studentId = buildStudentId(newStudent);
-      await newStudent.save();
-    }
 
     res.status(201).json({
       success: true,
@@ -278,12 +305,21 @@ router.post('/', async (req, res) => {
       data: newStudent
     });
   } catch (err) {
+    if (firebaseUid) {
+      try {
+        await admin.auth().deleteUser(firebaseUid);
+      } catch (cleanupErr) {
+        console.error('Failed to cleanup Firebase user:', cleanupErr.message);
+      }
+    }
+
     if (err.code === 11000) {
       return res.status(400).json({
         success: false,
         error: 'Student email already exists in database'
       });
     }
+
     res.status(500).json({
       success: false,
       error: 'Failed to add student: ' + err.message
@@ -347,11 +383,14 @@ router.post('/bulk-upload-simple', async (req, res) => {
         const cleanName = name.trim();
         const cleanProgram = (program || '').trim() || 'No Program Assigned';
 
-        const firebaseResult = await createFirebaseUser(cleanEmail, password);
+        const firebaseResult = await createFirebaseUser(cleanEmail, password, cleanName);
         if (firebaseResult.success) {
           results.firebaseSuccess++;
         } else {
           results.firebaseFailed++;
+          results.failed++;
+          results.errors.push(`Row ${i + 1}: Firebase error for ${cleanEmail}: ${firebaseResult.error}`);
+          continue;
         }
 
         const existingStudent = await Student.findOne({ email: cleanEmail });
@@ -366,13 +405,14 @@ router.post('/bulk-upload-simple', async (req, res) => {
           existingStudent.isActive = true;
 
           if (!safeValue(existingStudent.studentId)) {
-            existingStudent.studentId = buildStudentId(existingStudent);
+            existingStudent.studentId = firebaseResult.uid || buildStudentId(existingStudent);
           }
 
           await existingStudent.save();
           results.updated++;
         } else {
           const newStudent = new Student({
+            studentId: firebaseResult.uid,
             name: cleanName,
             program: cleanProgram,
             email: cleanEmail,
@@ -385,12 +425,6 @@ router.post('/bulk-upload-simple', async (req, res) => {
           });
 
           await newStudent.save();
-
-          if (!safeValue(newStudent.studentId)) {
-            newStudent.studentId = buildStudentId(newStudent);
-            await newStudent.save();
-          }
-
           results.created++;
         }
       } catch (error) {
@@ -524,7 +558,15 @@ router.put('/:email', async (req, res) => {
 
     if (password !== undefined) {
       updateData.password = password;
-      await updateFirebaseUserPassword(email.toLowerCase(), password);
+      updateData.tempPassword = password;
+
+      const firebaseUpdate = await updateFirebaseUserPassword(email.toLowerCase(), password);
+      if (!firebaseUpdate.success) {
+        return res.status(400).json({
+          success: false,
+          error: 'Failed to update Firebase password: ' + firebaseUpdate.error
+        });
+      }
     }
 
     if (newEmail) {
@@ -576,8 +618,7 @@ router.put('/:email', async (req, res) => {
 });
 
 /*
-  NEW FIX ROUTE FOR OLD DATA
-  Run this once:
+  Run once if needed:
   PUT /api/students/fix-old-students-data
 */
 router.put('/fix-old-students-data', async (req, res) => {
