@@ -119,9 +119,49 @@ const extractUnitFiles = (unit) => {
   return collected;
 };
 
+const getDefaultDateRange = () => {
+  const endDate = new Date();
+  const startDate = new Date();
+  startDate.setMonth(startDate.getMonth() - 3);
+  startDate.setHours(0, 0, 0, 0);
+  endDate.setHours(23, 59, 59, 999);
+
+  return { startDate, endDate };
+};
+
+const getRequestDateRange = (req) => {
+  const defaults = getDefaultDateRange();
+
+  const startDate = req.query.startDate
+    ? new Date(`${req.query.startDate}T00:00:00.000Z`)
+    : defaults.startDate;
+
+  const endDate = req.query.endDate
+    ? new Date(`${req.query.endDate}T23:59:59.999Z`)
+    : defaults.endDate;
+
+  return { startDate, endDate };
+};
+
+const buildOrDateQuery = (fields, startDate, endDate) => {
+  const validFields = Array.isArray(fields) ? fields.filter(Boolean) : [];
+  if (!validFields.length) return {};
+
+  return {
+    $or: validFields.map((field) => ({
+      [field]: { $gte: startDate, $lte: endDate }
+    }))
+  };
+};
+
 router.get('/', async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 10, 100);
+    const limit = Math.min(parseInt(req.query.limit, 10) || 20000, 50000);
+    const audience = cleanDisplayValue(req.query.audience || 'all').toLowerCase();
+    const programFilter = cleanDisplayValue(req.query.program || '').toLowerCase();
+    const classFilter = cleanDisplayValue(req.query.className || '').toLowerCase();
+
+    const { startDate, endDate } = getRequestDateRange(req);
 
     const m = (name) => {
       try {
@@ -136,15 +176,159 @@ router.get('/', async (req, res) => {
     const Meeting = m('Meeting');
     const Unit = m('Unit') || m('unit');
     const Assignment = m('Assignment');
-    // const File = m('File');
+    const StudentActivity = m('StudentActivity');
+    const Student = m('Students') || m('Student');
+    const Class = m('Class');
 
     const all = [];
+
+    const emailStudentMap = new Map();
+    const idStudentMap = new Map();
+    const studentClassMap = new Map();
+
+    if (Student) {
+      try {
+        const students = await Student.find({})
+          .select('name fullName email studentId program course department password tempPassword')
+          .lean();
+
+        students.forEach((student) => {
+          const email = cleanDisplayValue(student.email).toLowerCase();
+          const studentId = cleanDisplayValue(student.studentId);
+          const program =
+            cleanDisplayValue(student.program) ||
+            cleanDisplayValue(student.course) ||
+            cleanDisplayValue(student.department) ||
+            'No Program Assigned';
+
+          const passwordValue =
+            cleanDisplayValue(student.password) ||
+            cleanDisplayValue(student.tempPassword) ||
+            'Old account - reset required';
+
+          const mapped = {
+            name: getSafeActorName(student.name, student.fullName, student.email, 'Student'),
+            email,
+            studentId,
+            program,
+            passwordValue
+          };
+
+          if (email) emailStudentMap.set(email, mapped);
+          if (studentId) idStudentMap.set(studentId, mapped);
+        });
+      } catch (e) {
+        console.error('[recent-activities] Students:', e.message);
+      }
+    }
+
+    if (Class) {
+      try {
+        const classes = await Class.find({})
+          .select('name title className students')
+          .lean();
+
+        classes.forEach((cls) => {
+          const resolvedClassName =
+            cleanDisplayValue(cls.name) ||
+            cleanDisplayValue(cls.title) ||
+            cleanDisplayValue(cls.className) ||
+            'Class';
+
+          (cls.students || []).forEach((studentItem) => {
+            const email = cleanDisplayValue(studentItem?.email).toLowerCase();
+            if (!email) return;
+
+            if (!studentClassMap.has(email)) {
+              studentClassMap.set(email, new Set());
+            }
+
+            studentClassMap.get(email).add(resolvedClassName);
+          });
+        });
+      } catch (e) {
+        console.error('[recent-activities] Classes:', e.message);
+      }
+    }
+
+    const getStudentInfo = ({ email, userId, fallbackName = 'Student' }) => {
+      const normalizedEmail = cleanDisplayValue(email).toLowerCase();
+      const normalizedUserId = cleanDisplayValue(userId);
+
+      const byEmail = normalizedEmail ? emailStudentMap.get(normalizedEmail) : null;
+      const byId = normalizedUserId ? idStudentMap.get(normalizedUserId) : null;
+      const student = byEmail || byId || null;
+
+      const enrolledClasses =
+        normalizedEmail && studentClassMap.has(normalizedEmail)
+          ? Array.from(studentClassMap.get(normalizedEmail))
+          : [];
+
+      return {
+        actorName: getSafeActorName(student?.name, fallbackName, normalizedEmail, 'Student'),
+        actorEmail: cleanDisplayValue(student?.email) || normalizedEmail || '',
+        program: cleanDisplayValue(student?.program) || 'No Program Assigned',
+        passwordValue:
+          cleanDisplayValue(student?.passwordValue) || 'Old account - reset required',
+        enrolledClasses
+      };
+    };
+
+    const isWithinDateRange = (value) => {
+      if (!value) return false;
+      const dt = new Date(value);
+      if (isNaN(dt.getTime())) return false;
+      if (dt < startDate) return false;
+      if (dt > endDate) return false;
+      return true;
+    };
+
+    const matchesAudience = (item) => {
+      const role = cleanDisplayValue(item.actorRole).toLowerCase();
+
+      if (audience === 'student') {
+        return role === 'student' || role === 'guest';
+      }
+
+      if (audience === 'staff') {
+        return role === 'staff';
+      }
+
+      return true;
+    };
+
+    const matchesProgramAndClass = (item) => {
+      if (programFilter) {
+        const itemProgram = cleanDisplayValue(item.program).toLowerCase();
+        if (!itemProgram.includes(programFilter)) return false;
+      }
+
+      if (classFilter) {
+        const itemClassName = cleanDisplayValue(item.className).toLowerCase();
+        const enrolledClasses = Array.isArray(item.enrolledClasses)
+          ? item.enrolledClasses.join(', ').toLowerCase()
+          : '';
+
+        if (!itemClassName.includes(classFilter) && !enrolledClasses.includes(classFilter)) {
+          return false;
+        }
+      }
+
+      return true;
+    };
 
     const push = (item) => {
       if (!item?.timestamp) return;
       const ts = new Date(item.timestamp);
       if (isNaN(ts.getTime())) return;
-      all.push({ ...item, timestamp: ts });
+      if (!isWithinDateRange(ts)) return;
+      if (!matchesAudience(item)) return;
+      if (!matchesProgramAndClass(item)) return;
+
+      all.push({
+        ...item,
+        timestamp: ts
+      });
     };
 
     // =========================
@@ -152,39 +336,40 @@ router.get('/', async (req, res) => {
     // =========================
     if (Submission) {
       try {
-        const submissions = await Submission.find({})
+        const submissions = await Submission.find(
+          buildOrDateQuery(['submissionDate', 'createdAt'], startDate, endDate)
+        )
           .populate('assignmentId', 'title')
-          .sort({ submissionDate: -1 })
-          .limit(50)
+          .sort({ submissionDate: -1, createdAt: -1 })
           .lean();
 
         submissions.forEach((s) => {
           const firstFile = Array.isArray(s.files) && s.files.length > 0 ? s.files[0] : null;
-          const assignmentTitle =
-            s.assignmentId?.title || s.assignmentTitle || 'an assignment';
+          const assignmentTitle = s.assignmentId?.title || s.assignmentTitle || 'an assignment';
 
-          const safeStudentName = getSafeActorName(
-            s.studentName,
-            s.name,
-            s.fullName,
-            s.studentEmail,
-            s.email,
-            s.studentId,
-            'Student'
-          );
-
-          const safeStudentEmail =
-            cleanDisplayValue(s.studentEmail) ||
-            cleanDisplayValue(s.email) ||
-            cleanDisplayValue(s.studentId) ||
-            '';
+          const studentInfo = getStudentInfo({
+            email: s.studentEmail || s.email,
+            userId: s.studentId,
+            fallbackName: getSafeActorName(
+              s.studentName,
+              s.name,
+              s.fullName,
+              s.studentEmail,
+              s.email,
+              s.studentId,
+              'Student'
+            )
+          });
 
           push({
             type: 'student_submission',
             label: 'Submission',
             actorRole: 'Student',
-            actorName: safeStudentName,
-            actorEmail: safeStudentEmail,
+            actorName: studentInfo.actorName,
+            actorEmail: studentInfo.actorEmail,
+            program: studentInfo.program,
+            passwordValue: studentInfo.passwordValue,
+            enrolledClasses: studentInfo.enrolledClasses,
             actionText: `submitted "${assignmentTitle}"`,
             meta: firstFile?.name ? `File: ${firstFile.name}` : 'Assignment submission',
             icon: '📤',
@@ -201,13 +386,18 @@ router.get('/', async (req, res) => {
     }
 
     // =========================
-    // STAFF ACTIVITY (legacy + nested people/visit)
+    // STAFF ACTIVITY
     // =========================
     if (StaffActivity) {
       try {
-        const docs = await StaffActivity.find({})
+        const docs = await StaffActivity.find(
+          buildOrDateQuery(
+            ['lastClassVisit', 'lastPeopleUpdate', 'updatedAt', 'createdAt'],
+            startDate,
+            endDate
+          )
+        )
           .sort({ updatedAt: -1, createdAt: -1 })
-          .limit(100)
           .lean();
 
         docs.forEach((doc) => {
@@ -227,6 +417,7 @@ router.get('/', async (req, res) => {
               icon: '👀',
               color: '#0ea5e9',
               timestamp: doc.lastClassVisit,
+              className,
               rawType: 'visit'
             });
           }
@@ -243,6 +434,7 @@ router.get('/', async (req, res) => {
               icon: '👥',
               color: '#14b8a6',
               timestamp: item.createdAt || doc.lastPeopleUpdate || doc.updatedAt,
+              className,
               rawType: 'people'
             });
           });
@@ -259,6 +451,7 @@ router.get('/', async (req, res) => {
               icon: '⚡',
               color: '#6366f1',
               timestamp: doc.itemData.createdAt || doc.createdAt || doc.updatedAt,
+              className,
               rawType: 'legacy'
             });
           }
@@ -269,13 +462,18 @@ router.get('/', async (req, res) => {
     }
 
     // =========================
-    // MEETINGS CREATED BY STAFF
+    // MEETINGS + STUDENT ATTENDANCE
     // =========================
     if (Meeting) {
       try {
-        const meetings = await Meeting.find({})
+        const meetings = await Meeting.find({
+          $or: [
+            { createdAt: { $gte: startDate, $lte: endDate } },
+            { scheduledTime: { $gte: startDate, $lte: endDate } },
+            { 'attendees.joinedAt': { $gte: startDate, $lte: endDate } }
+          ]
+        })
           .sort({ createdAt: -1, scheduledTime: -1 })
-          .limit(50)
           .lean();
 
         meetings.forEach((meeting) => {
@@ -303,13 +501,22 @@ router.get('/', async (req, res) => {
         meetings.forEach((meeting) => {
           (meeting.attendees || []).forEach((attendee) => {
             if (!attendee.joinedAt) return;
+            if (!isWithinDateRange(attendee.joinedAt)) return;
+
+            const studentInfo = getStudentInfo({
+              email: attendee.email,
+              fallbackName: getSafeActorName(attendee.name, attendee.email, 'Student')
+            });
 
             push({
               type: 'student_attended_meeting',
               label: 'Attendance',
               actorRole: attendee.isExternal ? 'Guest' : 'Student',
-              actorName: getSafeActorName(attendee.name, attendee.email, 'Student'),
-              actorEmail: cleanDisplayValue(attendee.email),
+              actorName: studentInfo.actorName,
+              actorEmail: studentInfo.actorEmail,
+              program: studentInfo.program,
+              passwordValue: studentInfo.passwordValue,
+              enrolledClasses: studentInfo.enrolledClasses,
               actionText: `joined meeting "${meeting.title || 'Untitled Meeting'}"`,
               meta: attendee.duration
                 ? `Duration: ${attendee.duration} min`
@@ -329,21 +536,21 @@ router.get('/', async (req, res) => {
     }
 
     // =========================
-    // STAFF UNITS / ASSESSMENTS + FILES INSIDE UNIT
+    // UNITS / FILES
     // =========================
     if (Unit) {
       try {
-        const units = await Unit.find({})
+        const units = await Unit.find(
+          buildOrDateQuery(['updatedAt', 'createdAt'], startDate, endDate)
+        )
           .populate('files')
           .sort({ updatedAt: -1, createdAt: -1 })
-          .limit(50)
           .lean();
 
         units.forEach((unit) => {
           const extractedFiles = extractUnitFiles(unit);
           const firstFile = extractedFiles.length > 0 ? extractedFiles[0] : null;
 
-          // Original unit creation activity
           push({
             type: 'staff_assessment',
             label: unit.isAssessmentUnit ? 'Assessment' : 'Unit',
@@ -369,9 +576,15 @@ router.get('/', async (req, res) => {
             rawType: 'unit'
           });
 
-          // NEW: separate file activities for files uploaded inside unit
           extractedFiles.forEach((file, index) => {
             if (!file.url) return;
+
+            const fileTs =
+              getFileTimestamp(file, unit.updatedAt || unit.createdAt) ||
+              unit.updatedAt ||
+              unit.createdAt;
+
+            if (!isWithinDateRange(fileTs)) return;
 
             push({
               type: 'staff_unit_file',
@@ -388,10 +601,7 @@ router.get('/', async (req, res) => {
               meta: unit.isAssessmentUnit ? 'Assessment resource' : 'Unit resource',
               icon: '📎',
               color: '#2563eb',
-              timestamp:
-                getFileTimestamp(file, unit.updatedAt || unit.createdAt) ||
-                unit.updatedAt ||
-                unit.createdAt,
+              timestamp: fileTs,
               link: file.url,
               linkLabel: `Open ${file.name || `file ${index + 1}`}`,
               rawType: 'unit_file'
@@ -408,9 +618,10 @@ router.get('/', async (req, res) => {
     // =========================
     if (Assignment) {
       try {
-        const assignments = await Assignment.find({})
+        const assignments = await Assignment.find(
+          buildOrDateQuery(['createdAt', 'updatedAt'], startDate, endDate)
+        )
           .sort({ createdAt: -1 })
-          .limit(50)
           .lean();
 
         assignments.forEach((assignment) => {
@@ -453,12 +664,80 @@ router.get('/', async (req, res) => {
       }
     }
 
+    // =========================
+    // STUDENT LOGIN + PASSWORD RESET
+    // =========================
+    if (StudentActivity) {
+      try {
+        const studentActivities = await StudentActivity.find({
+          type: { $in: ['login', 'password_reset'] },
+          timestamp: { $gte: startDate, $lte: endDate }
+        })
+          .sort({ timestamp: -1 })
+          .lean();
+
+        studentActivities.forEach((act) => {
+          const studentInfo = getStudentInfo({
+            email: act.email,
+            userId: act.userId,
+            fallbackName: act.email || 'Student'
+          });
+
+          if (act.type === 'login') {
+            push({
+              type: 'student_login',
+              label: 'Recently Active',
+              actorRole: 'Student',
+              actorName: studentInfo.actorName,
+              actorEmail: studentInfo.actorEmail,
+              program: studentInfo.program,
+              passwordValue: studentInfo.passwordValue,
+              enrolledClasses: studentInfo.enrolledClasses,
+              actionText: 'logged in to the portal',
+              meta: act.loggedOut
+                ? `Logged out at: ${act.logoutTime ? new Date(act.logoutTime).toLocaleString() : 'N/A'}`
+                : 'Active session',
+              icon: '🔐',
+              color: '#22c55e',
+              timestamp: act.timestamp,
+              rawType: 'student_login'
+            });
+          }
+
+          if (act.type === 'password_reset') {
+            push({
+              type: 'student_password_reset',
+              label: 'Password Reset',
+              actorRole: 'Student',
+              actorName: studentInfo.actorName,
+              actorEmail: studentInfo.actorEmail,
+              program: studentInfo.program,
+              passwordValue: studentInfo.passwordValue,
+              enrolledClasses: studentInfo.enrolledClasses,
+              actionText: 'updated password',
+              meta: 'Password reset activity',
+              icon: '🔑',
+              color: '#f97316',
+              timestamp: act.timestamp,
+              rawType: 'password_reset'
+            });
+          }
+        });
+      } catch (e) {
+        console.error('[recent-activities] StudentActivity:', e.message);
+      }
+    }
+
     all.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
     res.status(200).json({
       success: true,
       activities: all.slice(0, limit),
-      total: all.length
+      total: all.length,
+      range: {
+        startDate,
+        endDate
+      }
     });
   } catch (error) {
     console.error('Error in /api/recent-activities:', error);

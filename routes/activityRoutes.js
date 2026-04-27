@@ -15,10 +15,28 @@ function extractNameFromEmail(email) {
     .trim() || 'Unknown User';
 }
 
+function isWithinDateRange(timestamp, startDate, endDate) {
+  if (!timestamp) return false;
+  const dt = new Date(timestamp);
+  if (isNaN(dt.getTime())) return false;
+
+  if (startDate) {
+    const start = new Date(`${startDate}T00:00:00.000Z`);
+    if (dt < start) return false;
+  }
+
+  if (endDate) {
+    const end = new Date(`${endDate}T23:59:59.999Z`);
+    if (dt > end) return false;
+  }
+
+  return true;
+}
+
 // Build sessions only from LOGIN records
-function buildSessionsFromLoginRecords(loginActivities, studentNameMap = {}) {
+function buildSessionsFromLoginRecords(loginActivities, studentNameMap = {}, startDate = null, endDate = null) {
   const sessions = loginActivities
-    .filter(act => act && act.timestamp)
+    .filter(act => act && act.timestamp && isWithinDateRange(act.timestamp, startDate, endDate))
     .map(act => ({
       userId: act.userId,
       email: act.email,
@@ -44,7 +62,6 @@ router.post('/log', async (req, res) => {
 
   try {
     if (type === 'login') {
-      // Check if already has active login by userId OR email
       const activeSession = await Activity.findOne({
         type: 'login',
         loggedOut: false,
@@ -62,7 +79,6 @@ router.post('/log', async (req, res) => {
         });
       }
 
-      // Create a single login record = one session
       const activity = new Activity({
         userId,
         email: normalizedEmail,
@@ -77,7 +93,6 @@ router.post('/log', async (req, res) => {
     }
 
     if (type === 'logout') {
-      // Find latest active login by userId OR email
       let lastLogin = null;
       let attempts = 0;
       const maxAttempts = 3;
@@ -111,7 +126,6 @@ router.post('/log', async (req, res) => {
         }
       }
 
-      // Keep logout record for audit history
       const activity = new Activity({
         userId,
         email: normalizedEmail,
@@ -153,6 +167,7 @@ router.post('/log', async (req, res) => {
 router.get('/class/:classId', async (req, res) => {
   try {
     const { classId } = req.params;
+    const { startDate, endDate } = req.query;
 
     const classData = await Class.findById(classId).select('students');
     if (!classData) {
@@ -175,7 +190,6 @@ router.get('/class/:classId', async (req, res) => {
       }
     });
 
-    // IMPORTANT: only login records represent sessions
     const loginActivities = await Activity.find({
       type: 'login',
       $or: [
@@ -184,7 +198,7 @@ router.get('/class/:classId', async (req, res) => {
       ]
     }).sort({ timestamp: -1 }).exec();
 
-    const sessions = buildSessionsFromLoginRecords(loginActivities, studentNameMap);
+    const sessions = buildSessionsFromLoginRecords(loginActivities, studentNameMap, startDate, endDate);
 
     res.json(sessions);
   } catch (err) {
@@ -195,11 +209,13 @@ router.get('/class/:classId', async (req, res) => {
 
 router.get('/all', async (req, res) => {
   try {
+    const { startDate, endDate } = req.query;
+
     const loginActivities = await Activity.find({ type: 'login' })
       .sort({ timestamp: -1 })
       .exec();
 
-    const sessions = buildSessionsFromLoginRecords(loginActivities);
+    const sessions = buildSessionsFromLoginRecords(loginActivities, {}, startDate, endDate);
 
     res.json(sessions);
   } catch (err) {
